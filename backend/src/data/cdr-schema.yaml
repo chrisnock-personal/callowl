@@ -1,0 +1,922 @@
+openapi: 3.1.0
+info:
+  title: Open Standards Call Detail Record (CDR) API
+  version: 1.0.0
+  description: |
+    Open standards schema for Call Detail Records (CDR) designed to provide
+    interoperability between telephony/UC switch vendors and compliance recording
+    platforms.
+
+    This schema covers:
+    - Voice, video, chat, IM, and email interactions
+    - Multi-party calls including conferences, transfers, barge, and monitor scenarios
+    - Full call event timelines
+    - Device, codec, and QoS metadata
+    - Cloud recording references
+
+    **Versioning:** All breaking changes will be published as a new major API version.
+    Consumers should specify the desired version via the `Accept` header or URL prefix.
+
+  contact:
+    name: CDR Open Standards Working Group
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: https://{host}/api/cdr/v1
+    variables:
+      host:
+        default: switch.example.com
+
+tags:
+  - name: Call Records
+    description: Historical call detail record retrieval
+  - name: Statistics
+    description: Aggregate statistical data
+  - name: Health
+    description: API health and version information
+
+paths:
+  /calls:
+    get:
+      operationId: listCallRecords
+      summary: Retrieve historical call detail records
+      description: |
+        Returns a paginated list of CDRs filtered by time range and optional criteria.
+        Records are returned ordered by `lastUpdateTime` (or `endTime` if LUT unavailable),
+        ascending. Records whose `endTime` falls within the requested window are returned
+        even if their `startTime` precedes the window start.
+      tags: [Call Records]
+      parameters:
+        - $ref: '#/components/parameters/StartTime'
+        - $ref: '#/components/parameters/EndTime'
+        - $ref: '#/components/parameters/MediaType'
+        - $ref: '#/components/parameters/Groups'
+        - $ref: '#/components/parameters/ExcludeGroups'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallRecordPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /calls/{callId}:
+    get:
+      operationId: getCallRecord
+      summary: Retrieve a single call detail record by ID
+      tags: [Call Records]
+      parameters:
+        - name: callId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique call identifier
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallRecord'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /statistics/summary:
+    get:
+      operationId: getStatisticsSummary
+      summary: Retrieve aggregate interaction statistics
+      tags: [Statistics]
+      parameters:
+        - $ref: '#/components/parameters/StartTime'
+        - $ref: '#/components/parameters/EndTime'
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatisticsSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: API health and version probe
+      tags: [Health]
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+components:
+
+  # ─────────────────────────────────────────────
+  # Parameters
+  # ─────────────────────────────────────────────
+  parameters:
+    StartTime:
+      name: startTime
+      in: query
+      required: true
+      description: |
+        Inclusive start of the query window (UTC, ISO 8601).
+        Granularity must be at minimum per-minute: `YYYY-MM-DDTHH:MM:00Z`
+      schema:
+        type: string
+        format: date-time
+        example: "2024-06-01T08:00:00Z"
+
+    EndTime:
+      name: endTime
+      in: query
+      required: true
+      description: |
+        Exclusive end of the query window (UTC, ISO 8601).
+        Records whose `endTime` falls within this window are included,
+        even if their `startTime` is before `startTime`.
+      schema:
+        type: string
+        format: date-time
+        example: "2024-06-01T09:00:00Z"
+
+    MediaType:
+      name: mediaType
+      in: query
+      required: false
+      description: Filter records by one or more media types (comma-delimited).
+      schema:
+        type: string
+        example: "voice,video"
+
+    Groups:
+      name: groups
+      in: query
+      required: false
+      description: |
+        Comma-delimited list of logical group identifiers to include.
+        If omitted, all accessible groups are returned.
+      schema:
+        type: string
+        example: "trading-floor-london,compliance-group-1"
+
+    ExcludeGroups:
+      name: excludeGroups
+      in: query
+      required: false
+      description: Comma-delimited list of logical group identifiers to exclude.
+      schema:
+        type: string
+
+    Page:
+      name: page
+      in: query
+      required: false
+      description: 1-based page number.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      description: Number of records per page (max 1000).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
+
+    TenantId:
+      name: X-Tenant-Id
+      in: header
+      required: false
+      description: Tenant identifier for multi-tenant deployments.
+      schema:
+        type: string
+
+  # ─────────────────────────────────────────────
+  # Schemas
+  # ─────────────────────────────────────────────
+  schemas:
+
+    # ── Pagination wrapper ──
+    CallRecordPage:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CallRecord'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    Pagination:
+      type: object
+      required: [page, pageSize, totalPages, totalRecords]
+      properties:
+        page:
+          type: integer
+          description: Current page number (1-based).
+          example: 1
+        pageSize:
+          type: integer
+          description: Records per page.
+          example: 100
+        totalPages:
+          type: integer
+          description: Total number of pages for this query.
+          example: 4
+        totalRecords:
+          type: integer
+          description: Total number of matching records.
+          example: 382
+
+    # ── Core CDR ──
+    CallRecord:
+      type: object
+      required:
+        - callId
+        - callStartTime
+        - callEndTime
+        - callState
+        - mediaType
+        - participants
+      description: |
+        A single Call Detail Record. Represents one interaction leg or session.
+        Multi-party scenarios (conferences, transfers) are expressed via the
+        `participants` array (multiple entries) and `parentCallId` / `relatedCallIds`.
+      properties:
+
+        # ── Identity ──
+        callId:
+          type: string
+          description: |
+            **[Required]** Globally unique call identifier. Must be stable and not recycled.
+            This ID must match the Call ID delivered to the voice recorder via CTI.
+          example: "cc2e4b91-3f7a-4d2e-b123-8f0a1c9e5d73"
+
+        parentCallId:
+          type: string
+          description: |
+            **[Optional]** Call ID of the parent leg from which this leg was spawned
+            (e.g. on transfer or barge). Used to reconstruct related call chains.
+          example: "a1b2c3d4-0000-0000-0000-111122223333"
+
+        relatedCallIds:
+          type: array
+          description: |
+            **[Optional]** Additional call IDs related to this interaction
+            (e.g. conference legs, consultation legs).
+          items:
+            type: string
+          example: ["leg-001", "leg-002"]
+
+        tenantId:
+          type: string
+          description: |
+            **[Optional]** Tenant or partition identifier for multi-tenant platforms.
+          example: "tenant-london"
+
+        sourcePlatformId:
+          type: string
+          description: |
+            **[Optional, recommended]** Identifier of the specific switch/UC platform
+            instance that originated this record (e.g. a PBX node, cluster member, or
+            tenant switch ID). Enables a compliance recording platform ingesting CDRs
+            from multiple integrated switches to disambiguate and correlate records
+            back to their source system. Should be stable across records from the same
+            source instance.
+          example: "switch-lon-01"
+
+        sourcePlatformType:
+          type: string
+          description: |
+            **[Optional]** Vendor/product identifier of the originating platform
+            (e.g. `"Cisco UCM"`, `"Genesys Cloud"`, `"Avaya Aura"`, `"Zoom Phone"`,
+            `"Microsoft Teams"`). Free-text to accommodate the open vendor ecosystem;
+            consumers requiring strict enumeration should pair this with
+            `sourcePlatformId` or a vendor-specific field.
+          example: "Cisco UCM"
+
+        # ── Timing ──
+        interactionStartTime:
+          type: string
+          format: date-time
+          description: |
+            **[Optional]** UTC timestamp when the interaction was initiated (dial/ringing).
+            May be omitted if identical to `callStartTime`.
+          example: "2024-06-01T08:00:00.000Z"
+
+        callStartTime:
+          type: string
+          format: date-time
+          description: |
+            **[Required]** UTC timestamp when the call was connected/answered.
+          example: "2024-06-01T08:00:05.000Z"
+
+        callEndTime:
+          type: string
+          format: date-time
+          description: |
+            **[Required]** UTC timestamp when the call ended.
+            Absence of this field implies the call is still active (`callState: ongoing`).
+          example: "2024-06-01T08:12:47.000Z"
+
+        interactionEndTime:
+          type: string
+          format: date-time
+          description: |
+            **[Optional]** UTC timestamp when the full interaction ended (e.g. after wrap-up).
+            May be omitted if identical to `callEndTime`.
+          example: "2024-06-01T08:13:10.000Z"
+
+        lastUpdateTime:
+          type: string
+          format: date-time
+          description: |
+            **[Optional]** UTC timestamp of the last modification to this record.
+            Used for incremental polling and ordering.
+          example: "2024-06-01T08:13:10.500Z"
+
+        durationSeconds:
+          type: number
+          format: float
+          description: |
+            **[Derived]** Total call duration in seconds (callEndTime - callStartTime).
+            Provided for convenience; should be derivable from timestamps.
+          example: 762.0
+
+        # ── State & Type ──
+        callState:
+          type: string
+          enum: [ongoing, ended, missed, abandoned]
+          description: |
+            **[Required]** Current state of the call.
+            - `ongoing`: Call is active (no `callEndTime`).
+            - `ended`: Call concluded normally.
+            - `missed`: Rang but was never answered.
+            - `abandoned`: Caller disconnected before agent pickup.
+          example: "ended"
+
+        callDirection:
+          type: string
+          enum: [inbound, outbound, internal, unknown]
+          description: "**[Optional]** Direction of the call from the switch's perspective."
+          example: "inbound"
+
+        callType:
+          type: string
+          enum: [peer_to_peer, group, conference, meeting, intercom, private_wire, voicemail, unknown]
+          description: "**[Optional]** Logical type of the call."
+          example: "peer_to_peer"
+
+        mediaType:
+          type: string
+          enum: [voice, video, chat, instant_message, email, unknown]
+          description: |
+            **[Required]** Primary media modality of the interaction.
+          example: "voice"
+
+        # ── Routing ──
+        callSource:
+          $ref: '#/components/schemas/CallSource'
+
+        wrapUpInfo:
+          $ref: '#/components/schemas/WrapUpInfo'
+
+        # ── Participants ──
+        participants:
+          type: array
+          minItems: 1
+          description: |
+            **[Required]** All parties involved in the interaction.
+            For a standard two-party call this array has two entries (caller + callee).
+            For conferences, transfers, barge-in, or monitor sessions additional entries
+            are included, each with an appropriate `role`.
+          items:
+            $ref: '#/components/schemas/Participant'
+
+        # ── Events ──
+        events:
+          type: array
+          description: |
+            **[Optional]** Ordered timeline of call events. Provides a detailed audit trail
+            of state changes, transfers, conference joins/leaves, and recording actions.
+          items:
+            $ref: '#/components/schemas/CallEvent'
+
+        # ── Recording ──
+        cloudRecording:
+          $ref: '#/components/schemas/CloudRecordingInfo'
+
+        # ── QoS ──
+        qos:
+          $ref: '#/components/schemas/QoSInfo'
+
+        # ── Vendor Specific Fields ──
+        vendorSpecificFields:
+          type: object
+          additionalProperties: true
+          description: |
+            **[Optional]** Vendor-specific or platform-specific metadata not covered by
+            this schema. Keys should use reverse-DNS notation (e.g. `com.vendorname.field`).
+
+    # ── Participant ──
+    Participant:
+      type: object
+      required: [participantId, role, extension]
+      description: |
+        Represents a single party in the interaction. Multi-party scenarios
+        (conferences, transfers, barge, monitor) add additional participants with
+        appropriate roles.
+      properties:
+        participantId:
+          type: string
+          description: |
+            **[Required]** Unique identifier for this participant within this call record.
+            May be a sequence number or a UUID. Stable within the record.
+          example: "p1"
+
+        role:
+          type: string
+          enum:
+            - caller
+            - callee
+            - conference_participant
+            - transfer_source
+            - transfer_target
+            - transfer_consultation
+            - barge_agent
+            - monitor_supervisor
+            - ivr
+            - queue
+            - voicemail
+            - unknown
+          description: |
+            **[Required]** Role this participant played in the interaction.
+            - `caller` / `callee`: Standard two-party.
+            - `conference_participant`: Member of a multi-party conference.
+            - `transfer_source`: The party initiating a transfer.
+            - `transfer_target`: The destination of a transfer.
+            - `transfer_consultation`: Consultation leg before a blind/warm transfer completes.
+            - `barge_agent`: Agent or supervisor who barged into an existing call.
+            - `monitor_supervisor`: Supervisor silently monitoring a call.
+            - `ivr` / `queue`: Automated system legs.
+          example: "caller"
+
+        extension:
+          type: string
+          description: |
+            **[Required]** Dialled number / extension (ANI for caller, DNIS for callee).
+          example: "2341"
+
+        userId:
+          type: string
+          description: |
+            **[Required if internal party]** Unique user ID as known to the switch
+            (username, AgentId, TraderId). Omit for external parties.
+          example: "jsmith"
+
+        displayName:
+          type: string
+          description: "**[Optional]** Human-readable display name."
+          example: "John Smith"
+
+        deviceId:
+          type: string
+          description: "**[Optional]** Unique device/client ID as known to the switch."
+          example: "device-0042"
+
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
+
+        group:
+          type: string
+          description: |
+            **[Required]** Group or Skill Group this participant belongs to.
+          example: "trading-floor-london"
+
+        recordingConfig:
+          type: string
+          enum: [record, do_not_record, not_applicable, unknown]
+          description: |
+            **[Optional]** Switch-side recording configuration for this participant.
+          example: "record"
+
+        joinTime:
+          type: string
+          format: date-time
+          description: |
+            **[Optional]** UTC time this participant joined the interaction.
+            For the original caller/callee this equals `callStartTime`.
+            For late joiners (conference) this will differ.
+          example: "2024-06-01T08:00:05.000Z"
+
+        leaveTime:
+          type: string
+          format: date-time
+          description: |
+            **[Optional]** UTC time this participant left the interaction.
+            For the original caller/callee this equals `callEndTime`.
+          example: "2024-06-01T08:12:47.000Z"
+
+        slotNumber:
+          type: string
+          description: "**[Optional - Trading]** Trading turret slot number."
+          example: "slot-3"
+
+        handsetInfo:
+          type: string
+          description: "**[Optional - Trading]** Handset/speaker identifier in use."
+          example: "HS1"
+
+    # ── Device Info ──
+    DeviceInfo:
+      type: object
+      description: Client device metadata for a participant.
+      properties:
+        model:
+          type: string
+          description: "**[Optional]** Device model name (e.g. 'XX SoftPhone v4', 'ABC Turret')."
+          example: "XYZ UC Client"
+        softwareVersion:
+          type: string
+          description: "**[Optional]** Software or firmware version."
+          example: "5.2.1.1042"
+        macAddress:
+          type: string
+          description: "**[Optional]** MAC address of the device."
+          example: "00:1A:2B:3C:4D:5E"
+        ipAddress:
+          type: string
+          description: "**[Optional]** IP address of the device at call time."
+          example: "10.0.1.45"
+        audioCodec:
+          type: string
+          description: "**[Optional]** Audio codec negotiated for this participant."
+          example: "G.722"
+        videoCodec:
+          type: string
+          description: "**[Optional]** Video codec negotiated for this participant (if applicable)."
+          example: "H.264"
+
+    # ── Call Event ──
+    CallEvent:
+      type: object
+      required: [eventTime, eventType]
+      description: A discrete event in the call timeline.
+      properties:
+        eventTime:
+          type: string
+          format: date-time
+          description: "**[Required]** UTC timestamp of the event."
+          example: "2024-06-01T08:03:15.000Z"
+
+        eventType:
+          type: string
+          enum:
+            - ringing
+            - connected
+            - disconnected
+            - missed
+            - hold
+            - resume
+            - transfer_initiated
+            - transfer_completed
+            - transfer_failed
+            - conference_created
+            - participant_join
+            - participant_leave
+            - participant_rejoin
+            - barge_in
+            - monitor_start
+            - monitor_stop
+            - swap_audio_device
+            - record_on_demand_start
+            - record_on_demand_stop
+            - pause_recording
+            - resume_recording
+            - voicemail
+            - park
+            - ivr_entry
+            - ivr_exit
+            - queue_entry
+            - queue_exit
+            - pre_agent_event
+            - function_key_press
+            - other
+          description: "**[Required]** Type of event."
+          example: "hold"
+
+        participantId:
+          type: string
+          description: "**[Optional]** ID of the participant who triggered this event."
+          example: "p1"
+
+        targetParticipantId:
+          type: string
+          description: |
+            **[Optional]** ID of the participant targeted by this event
+            (e.g. the party being transferred to).
+          example: "p2"
+
+        detail:
+          type: string
+          description: |
+            **[Optional]** Human-readable or structured detail string for the event
+            (e.g. IVR menu selection, function key name, audio device name).
+          example: "Transfer to extension 3301"
+
+        metadata:
+          type: object
+          additionalProperties: true
+          description: "**[Optional]** Additional event-specific key-value metadata."
+
+    # ── Call Source ──
+    CallSource:
+      type: object
+      description: Routing origin information for inbound calls.
+      properties:
+        huntNumber:
+          type: string
+          description: "**[Optional]** Hunt group or original DNIS if redirected."
+          example: "8000"
+        ivrInfo:
+          type: string
+          description: "**[Optional]** IVR/IVA identifier or path taken."
+          example: "ivr-main > sales"
+        queueInfo:
+          type: string
+          description: "**[Optional]** Call queue or ACD group."
+          example: "ACD-FX-London"
+        timeInIvrSeconds:
+          type: number
+          description: "**[Optional]** Seconds spent in IVR before agent pickup."
+          example: 45.0
+        timeInQueueSeconds:
+          type: number
+          description: "**[Optional]** Seconds spent in call queue before agent pickup."
+          example: 120.5
+
+    # ── Wrap-Up ──
+    WrapUpInfo:
+      type: object
+      description: Post-call wrap-up codes and notes.
+      properties:
+        wrapUpCode:
+          type: string
+          description: "**[Optional]** Wrap-up / disposition code."
+          example: "SALE_COMPLETED"
+        wrapUpNotes:
+          type: string
+          description: "**[Optional]** Free-text wrap-up notes."
+        wrapUpDurationSeconds:
+          type: number
+          description: "**[Optional]** Time spent in wrap-up state after call ended."
+          example: 90.0
+
+    # ── Cloud Recording ──
+    CloudRecordingInfo:
+      type: object
+      description: Reference to a cloud-held recording for this interaction.
+      properties:
+        recordingStatus:
+          type: string
+          enum: [recorded, not_recorded, partial, unknown]
+          description: "**[Optional]** Whether this interaction was recorded."
+          example: "recorded"
+        recordingMethod:
+          type: string
+          enum: [automatic, manual, on_demand, unknown]
+          description: "**[Optional]** How recording was triggered."
+          example: "automatic"
+        recordingId:
+          type: string
+          description: "**[Optional]** Unique ID of the recording as held by the cloud provider."
+          example: "rec-9f8e7d6c"
+        mediaName:
+          type: string
+          description: "**[Optional]** Recording media file name."
+          example: "call_20240601_080005_cc2e4b91.mp4"
+        downloadPath:
+          type: string
+          format: uri
+          description: "**[Optional]** URI to download or stream the recording."
+          example: "https://recordings.example.com/rec-9f8e7d6c"
+
+    # ── QoS ──
+    QoSInfo:
+      type: object
+      description: Voice/video quality-of-service metrics for the interaction.
+      properties:
+        mosScore:
+          type: number
+          format: float
+          minimum: 1.0
+          maximum: 5.0
+          description: "**[Optional]** Mean Opinion Score (MOS) for the call."
+          example: 4.2
+        latencyMs:
+          type: number
+          description: "**[Optional]** Average network latency in milliseconds."
+          example: 18.5
+        jitterMs:
+          type: number
+          description: "**[Optional]** Average jitter in milliseconds."
+          example: 3.1
+        packetLossPercent:
+          type: number
+          minimum: 0.0
+          maximum: 100.0
+          description: "**[Optional]** Packet loss as a percentage."
+          example: 0.2
+        packetsTotal:
+          type: integer
+          description: "**[Optional]** Total number of RTP packets in the session."
+          example: 38400
+
+    # ── Statistics ──
+    StatisticsSummary:
+      type: object
+      description: Aggregate interaction statistics for the requested window.
+      properties:
+        periodStart:
+          type: string
+          format: date-time
+        periodEnd:
+          type: string
+          format: date-time
+        byComponent:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComponentStat'
+        byMediaType:
+          type: array
+          items:
+            $ref: '#/components/schemas/MediaTypeStat'
+        voiceBreakdown:
+          $ref: '#/components/schemas/VoiceBreakdown'
+        averageDurations:
+          $ref: '#/components/schemas/AverageDurations'
+
+    ComponentStat:
+      type: object
+      properties:
+        componentType:
+          type: string
+          enum: [sbc, ivr, iva, switch, call_queue, acd, group, skill]
+        componentId:
+          type: string
+        totalInteractions:
+          type: integer
+
+    MediaTypeStat:
+      type: object
+      properties:
+        mediaType:
+          type: string
+          enum: [voice, video, chat, instant_message, email]
+        totalInteractions:
+          type: integer
+
+    VoiceBreakdown:
+      type: object
+      properties:
+        maturedAnswered:
+          type: integer
+          description: Calls answered by an agent.
+        unmaturedUnanswered:
+          type: integer
+          description: Calls not answered by an agent.
+        abandonedDuringIvr:
+          type: integer
+        abandonedDuringQueue:
+          type: integer
+
+    AverageDurations:
+      type: object
+      properties:
+        avgTimeInIvrSeconds:
+          type: number
+        avgTimeInQueueSeconds:
+          type: number
+        avgTimeWithAgentSeconds:
+          type: number
+        avgTotalInteractionSeconds:
+          type: number
+
+    # ── Health ──
+    HealthResponse:
+      type: object
+      required: [status, apiVersion]
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unavailable]
+          example: "healthy"
+        apiVersion:
+          type: string
+          example: "1.0.0"
+        platformVersion:
+          type: string
+          example: "SwitchOS 12.4.1"
+        timestamp:
+          type: string
+          format: date-time
+
+    # ── Error ──
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: "INVALID_TIME_RANGE"
+        message:
+          type: string
+          example: "endTime must be after startTime"
+        details:
+          type: array
+          items:
+            type: string
+
+  # ─────────────────────────────────────────────
+  # Responses
+  # ─────────────────────────────────────────────
+  responses:
+    BadRequest:
+      description: Bad request — invalid parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Authentication failed or missing credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Authenticated but insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  # ─────────────────────────────────────────────
+  # Security
+  # ─────────────────────────────────────────────
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.example.com/oauth/token
+          scopes:
+            cdr:read: Read call detail records
+            cdr:stats: Read aggregate statistics
+
+security:
+  - BearerAuth: []
+  - OAuth2: [cdr:read]

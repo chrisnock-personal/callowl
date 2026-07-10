@@ -1,0 +1,114 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Open CDR Platform — local / home-lab stack
+#
+# Three services: PostgreSQL, the Node/Express API, and an nginx-served React UI.
+# A multi-service compose (rather than a single supervisord container) keeps each
+# process independently inspectable — handy while prototyping. Works with both
+# `docker compose` and `podman-compose`.
+#
+#   cp .env.example .env      # adjust credentials
+#   podman-compose up --build # or: docker compose up --build
+#
+# Then open the UI at http://localhost:${HTTP_PORT} (default 8080).
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: opencdr-db
+    environment:
+      POSTGRES_DB: "${PGDATABASE:-opencdr}"
+      POSTGRES_USER: "${PGUSER:-opencdr}"
+      POSTGRES_PASSWORD: "${PGPASSWORD:-opencdr_pass}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-opencdr} -d ${PGDATABASE:-opencdr}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: opencdr-backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: "3001"
+      NODE_ENV: "${NODE_ENV:-production}"
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: "${PGDATABASE:-opencdr}"
+      PGUSER: "${PGUSER:-opencdr}"
+      PGPASSWORD: "${PGPASSWORD:-opencdr_pass}"
+      PGSSL: "false"
+      CORS_ORIGIN: "*"
+      SEED_EXAMPLES: "${SEED_EXAMPLES:-true}"
+      # Set to require a key on POST /calls/ingest. Leave unset for open ingest.
+      INGEST_API_KEY: "${INGEST_API_KEY:-}"
+      # Set to require a key on the admin backup/restore actions (not the
+      # read-only list). Strongly recommended once exposed beyond a local lab.
+      ADMIN_API_KEY: "${ADMIN_API_KEY:-}"
+      BACKUPS_DIR: /app/backups
+      BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-14}"
+      BACKUP_INTERVAL_HOURS: "${BACKUP_INTERVAL_HOURS:-24}"
+      # Dashboard/API login — always required, no open mode. Bootstrap admin
+      # is created on first boot if no users exist yet; see .env.example.
+      BOOTSTRAP_ADMIN_USERNAME: "${BOOTSTRAP_ADMIN_USERNAME:-admin}"
+      BOOTSTRAP_ADMIN_PASSWORD: "${BOOTSTRAP_ADMIN_PASSWORD:-}"
+      COOKIE_SECURE: "${COOKIE_SECURE:-false}"
+      # How long audit_log entries are kept (pruned on boot and daily).
+      AUDIT_LOG_RETENTION_DAYS: "${AUDIT_LOG_RETENTION_DAYS:-90}"
+    volumes:
+      # Read-write: the on-demand backup/restore endpoints write and read here,
+      # alongside the scheduled `backup` service. :z (shared label) relabels
+      # the host dir for SELinux (podman) since both services mount it.
+      - ./backups:/app/backups:z
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: opencdr-frontend
+    depends_on:
+      - backend
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    restart: unless-stopped
+
+  # Scheduled pg_dump on a loop (no cron daemon needed) + retention pruning.
+  # postgres:16-alpine already ships pg_dump/pg_restore, so it doubles as the
+  # image for one-off manual restores: see scripts/restore.sh.
+  backup:
+    image: postgres:16-alpine
+    container_name: opencdr-backup
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: "${PGDATABASE:-opencdr}"
+      PGUSER: "${PGUSER:-opencdr}"
+      PGPASSWORD: "${PGPASSWORD:-opencdr_pass}"
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-14}"
+      BACKUP_INTERVAL_HOURS: "${BACKUP_INTERVAL_HOURS:-24}"
+    volumes:
+      - ./backups:/backups:z
+      - ./scripts:/scripts:ro,Z
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        while true; do
+          sh /scripts/backup.sh || echo "[backup] run failed, will retry next interval"
+          sleep "$$(( BACKUP_INTERVAL_HOURS * 3600 ))"
+        done
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    driver: local

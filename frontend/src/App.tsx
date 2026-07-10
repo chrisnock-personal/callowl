@@ -1,0 +1,5325 @@
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  api,
+  setUnauthorizedHandler,
+  CallRecord,
+  CallEvent,
+  Participant,
+  Pagination,
+  StatisticsSummary,
+  TopTalker,
+  ThroughputPoint,
+  ThroughputOutcomePoint,
+  PlatformBreakdownPoint,
+  HandleTimeTrendPoint,
+  AgentHandleTime,
+  QueueWaitTrendPoint,
+  QueueWaitBreakdown,
+  WorstMosCall,
+  IvrTimeTrendPoint,
+  IvrBreakdown,
+  BackupStatus,
+  AuthUser,
+  ManagedUser,
+  ApiKeyMeta,
+  AuditLogEntry,
+} from "./api";
+
+// ─── Palette: "signal & routing" ──────────────────────────────────────────────
+// Cool paper, ink text, a signal-blue primary, and call-state colours drawn from
+// switchboard signalling rather than a generic dashboard green.
+const C = {
+  bg: "#EDF0F4",
+  surface: "#FFFFFF",
+  surfaceAlt: "#F5F7FA",
+  surfaceDeep: "#E7ECF2",
+  border: "#DCE2EA",
+  borderStrong: "#C4CCD6",
+  ink: "#0F1620",
+  textMid: "#46505E",
+  textMuted: "#8794A3",
+  accent: "#1D5FD6",
+  accentDeep: "#163F8F",
+  accentSoft: "#E4EDFC",
+  teal: "#0E9C8E",
+  tealSoft: "#DEF3F0",
+  amber: "#B9750A",
+  amberSoft: "#FBF0DA",
+  rose: "#C63A55",
+  roseSoft: "#FBE6EB",
+  violet: "#6B4BD1",
+  violetSoft: "#ECE7FB",
+};
+
+const MONO = "ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace";
+const SANS =
+  "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const fmt = (iso?: string) =>
+  iso
+    ? new Date(iso).toLocaleString("en-GB", {
+        dateStyle: "short",
+        timeStyle: "medium",
+      })
+    : "—";
+
+const fmtTimeOnly = (iso?: string) =>
+  iso
+    ? new Date(iso).toLocaleTimeString("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      })
+    : "—";
+
+function fmtDur(seconds?: number): string {
+  if (seconds == null) return "—";
+  const s = Math.round(seconds);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${s % 60}s`;
+}
+
+function stateStyle(state: CallRecord["callState"]) {
+  switch (state) {
+    case "ended":
+      return { fg: C.teal, bg: C.tealSoft, label: "Ended" };
+    case "ongoing":
+      return { fg: C.amber, bg: C.amberSoft, label: "Ongoing" };
+    case "missed":
+      return { fg: C.rose, bg: C.roseSoft, label: "Missed" };
+    case "abandoned":
+      return { fg: C.rose, bg: C.roseSoft, label: "Abandoned" };
+    default:
+      return { fg: C.textMid, bg: C.surfaceDeep, label: state };
+  }
+}
+
+const mediaGlyph: Record<string, string> = {
+  voice: "◍",
+  video: "▤",
+  chat: "❝",
+  instant_message: "✦",
+  email: "✉",
+  unknown: "·",
+};
+
+const directionGlyph: Record<string, string> = {
+  inbound: "↘",
+  outbound: "↗",
+  internal: "⇄",
+  unknown: "·",
+};
+
+// Event families → colour + label, so the timeline encodes what kind of thing
+// happened, not just that something did.
+function eventStyle(type: string): { color: string; soft: string; label: string } {
+  const label = type.replace(/_/g, " ");
+  if (type === "ringing" || type === "connected" || type === "resume")
+    return { color: C.teal, soft: C.tealSoft, label };
+  if (type === "disconnected" || type === "missed")
+    return { color: C.rose, soft: C.roseSoft, label };
+  if (type === "hold" || type === "park")
+    return { color: C.violet, soft: C.violetSoft, label };
+  if (type.startsWith("transfer") || type === "conference_created")
+    return { color: C.accent, soft: C.accentSoft, label };
+  if (
+    type.startsWith("participant") ||
+    type === "barge_in" ||
+    type.startsWith("monitor")
+  )
+    return { color: C.accentDeep, soft: C.accentSoft, label };
+  if (type.includes("record"))
+    return { color: C.amber, soft: C.amberSoft, label };
+  return { color: C.textMuted, soft: C.surfaceDeep, label };
+}
+
+// datetime-local <-> ISO (treat the picker value as the user's local wall time).
+function isoToLocalInput(iso: string): string {
+  const d = new Date(iso);
+  const off = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - off).toISOString().slice(0, 16);
+}
+function localInputToIso(v: string): string {
+  return new Date(v).toISOString();
+}
+
+// ─── Date-range presets ─────────────────────────────────────────────────────────
+// True rolling windows (now − N), computed in milliseconds — not calendar-day-
+// anchored (start-of-day N days back) like some dashboards do. "custom" is the
+// escape hatch: it never overwrites startTime/endTime, so the always-visible
+// From/To pickers stay the source of truth.
+const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
+
+const DATE_PRESETS: { value: string; label: string }[] = [
+  { value: "custom", label: "Custom range" },
+  { value: "1h", label: "Last hour" },
+  { value: "6h", label: "Last 6 hours" },
+  { value: "24h", label: "Last 24 hours" },
+  { value: "7d", label: "Last week" },
+  { value: "3m", label: "Last 3 months" },
+  { value: "6m", label: "Last 6 months" },
+];
+
+function computePresetRange(preset: string): { start: string; end: string } | null {
+  const now = new Date();
+  const end = now.toISOString();
+  switch (preset) {
+    case "1h":
+      return { start: new Date(now.getTime() - HOUR_MS).toISOString(), end };
+    case "6h":
+      return { start: new Date(now.getTime() - 6 * HOUR_MS).toISOString(), end };
+    case "24h":
+      return { start: new Date(now.getTime() - DAY_MS).toISOString(), end };
+    case "7d":
+      return { start: new Date(now.getTime() - 7 * DAY_MS).toISOString(), end };
+    case "3m": {
+      const d = new Date(now);
+      d.setMonth(d.getMonth() - 3);
+      return { start: d.toISOString(), end };
+    }
+    case "6m": {
+      const d = new Date(now);
+      d.setMonth(d.getMonth() - 6);
+      return { start: d.toISOString(), end };
+    }
+    default:
+      return null; // "custom"
+  }
+}
+
+// ─── Export ───────────────────────────────────────────────────────────────────
+function downloadBlob(filename: string, content: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function csvCell(v: unknown): string {
+  if (v == null) return "";
+  const s = String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+const CSV_COLUMNS = [
+  "callId",
+  "sourcePlatformId",
+  "sourcePlatformType",
+  "tenantId",
+  "callDirection",
+  "callType",
+  "mediaType",
+  "callState",
+  "callStartTime",
+  "callEndTime",
+  "durationSeconds",
+  "participantCount",
+  "groups",
+  "recordingStatus",
+];
+
+function toCsv(records: CallRecord[]): string {
+  const rows = records.map((r) => {
+    const groups = Array.from(
+      new Set(r.participants.map((p) => p.group).filter((g): g is string => !!g))
+    ).join("; ");
+    return [
+      r.callId,
+      r.sourcePlatformId,
+      r.sourcePlatformType,
+      r.tenantId,
+      r.callDirection,
+      r.callType,
+      r.mediaType,
+      r.callState,
+      r.callStartTime,
+      r.callEndTime,
+      r.durationSeconds,
+      r.participants.length,
+      groups,
+      r.cloudRecording?.recordingStatus,
+    ]
+      .map(csvCell)
+      .join(",");
+  });
+  return [CSV_COLUMNS.join(","), ...rows].join("\n");
+}
+
+const AUDIT_LOG_CSV_COLUMNS = [
+  "occurredAt",
+  "actorType",
+  "actorId",
+  "method",
+  "path",
+  "statusCode",
+  "recordCount",
+  "ipAddress",
+];
+
+function auditLogToCsv(entries: AuditLogEntry[]): string {
+  const rows = entries.map((e) =>
+    [e.occurredAt, e.actorType, e.actorId, e.method, e.path, e.statusCode, e.recordCount, e.ipAddress]
+      .map(csvCell)
+      .join(",")
+  );
+  return [AUDIT_LOG_CSV_COLUMNS.join(","), ...rows].join("\n");
+}
+
+// ─── Small UI atoms ───────────────────────────────────────────────────────────
+function Pill({
+  fg,
+  bg,
+  children,
+}: {
+  fg: string;
+  bg: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        padding: "2px 9px",
+        borderRadius: 999,
+        fontSize: 12,
+        fontWeight: 600,
+        color: fg,
+        background: bg,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <span
+        style={{
+          fontSize: 10.5,
+          letterSpacing: 0.6,
+          textTransform: "uppercase",
+          color: C.textMuted,
+          fontWeight: 700,
+        }}
+      >
+        {label}
+      </span>
+      <span style={{ fontSize: 13, color: C.ink, fontFamily: MONO }}>
+        {children ?? "—"}
+      </span>
+    </div>
+  );
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+export default function App() {
+  // Login is always required — see GET /auth/me on mount below. authChecked
+  // gates the first render so a logged-out visit doesn't flash the dashboard
+  // before the 401 comes back.
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  useEffect(() => {
+    api
+      .me()
+      .then(setAuthUser)
+      .catch(() => setAuthUser(null))
+      .finally(() => setAuthChecked(true));
+    // A session can expire or get revoked mid-use — any 401 from anywhere in
+    // the app drops straight back to the login screen.
+    setUnauthorizedHandler(() => setAuthUser(null));
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
+  // Defaults to a real rolling "last 24 hours" window — matches production
+  // behavior (a dashboard should open on recent activity, not a fixed
+  // historical date). The 2024 demo scenarios and older synthetic data stay
+  // reachable via the date pickers or the wider presets, just not on first load.
+  const initialRange = computePresetRange("24h")!;
+  const [startTime, setStartTime] = useState(initialRange.start);
+  const [endTime, setEndTime] = useState(initialRange.end);
+  const [datePreset, setDatePreset] = useState("24h");
+  const [mediaType, setMediaType] = useState("");
+  const [groups, setGroups] = useState("");
+  const [sourcePlatformId, setSourcePlatformId] = useState("");
+  const [participant, setParticipant] = useState("");
+  const [queue, setQueue] = useState("");
+  const [ivr, setIvr] = useState("");
+  const [advanced, setAdvanced] = useState("");
+
+  const [records, setRecords] = useState<CallRecord[]>([]);
+  const [pagination, setPagination] = useState<Pagination | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [stats, setStats] = useState<StatisticsSummary | null>(null);
+  const [talkersInternal, setTalkersInternal] = useState<TopTalker[]>([]);
+  const [talkersExternal, setTalkersExternal] = useState<TopTalker[]>([]);
+  const [talkersTab, setTalkersTab] = useState<"internal" | "external">("internal");
+  const [throughput, setThroughput] = useState<ThroughputPoint[]>([]);
+  const [throughputByOutcome, setThroughputByOutcome] = useState<ThroughputOutcomePoint[]>([]);
+  const [platformBreakdown, setPlatformBreakdown] = useState<PlatformBreakdownPoint[]>([]);
+  const [handleTimeTrend, setHandleTimeTrend] = useState<HandleTimeTrendPoint[]>([]);
+  const [agentHandleTime, setAgentHandleTime] = useState<AgentHandleTime[]>([]);
+  const [queueWaitTrend, setQueueWaitTrend] = useState<QueueWaitTrendPoint[]>([]);
+  const [queueWaitBreakdown, setQueueWaitBreakdown] = useState<QueueWaitBreakdown[]>([]);
+  const [worstMosCalls, setWorstMosCalls] = useState<WorstMosCall[]>([]);
+  const [ivrTimeTrend, setIvrTimeTrend] = useState<IvrTimeTrendPoint[]>([]);
+  const [ivrTimeByIvr, setIvrTimeByIvr] = useState<IvrBreakdown[]>([]);
+  const [health, setHealth] = useState<{ status: string; apiVersion: string } | null>(
+    null
+  );
+
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<CallRecord | null>(null);
+  // Drilling across to a related/parent call leg replaces `selected` but keeps
+  // a trail back to where you came from — cleared whenever a fresh record is
+  // opened from the table rather than drilled into.
+  const [drillStack, setDrillStack] = useState<CallRecord[]>([]);
+  const [drillLoading, setDrillLoading] = useState(false);
+  const [drillError, setDrillError] = useState<string | null>(null);
+  const [showIngest, setShowIngest] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const insightsParams = {
+        startTime,
+        endTime,
+        mediaType: mediaType || undefined,
+        groups: groups || undefined,
+        sourcePlatformId: sourcePlatformId || undefined,
+      };
+      // Hourly buckets read fine up to a few days; wider windows switch to daily
+      // so the throughput chart doesn't render hundreds of bars.
+      const spanHours =
+        (new Date(endTime).getTime() - new Date(startTime).getTime()) / 3_600_000;
+      const bucket: "hour" | "day" = spanHours <= 72 ? "hour" : "day";
+
+      const [
+        pageRes,
+        statsRes,
+        internalRes,
+        externalRes,
+        throughputRes,
+        throughputOutcomeRes,
+        platformRes,
+        handleTimeRes,
+        agentHandleTimeRes,
+        queueWaitRes,
+        queueWaitBreakdownRes,
+        worstMosRes,
+        ivrTimeRes,
+        ivrTimeByIvrRes,
+      ] = await Promise.all([
+        api.listCalls({
+          startTime,
+          endTime,
+          mediaType: mediaType || undefined,
+          groups: groups || undefined,
+          sourcePlatformId: sourcePlatformId || undefined,
+          participant: participant || undefined,
+          queue: queue || undefined,
+          ivr: ivr || undefined,
+          advanced: advanced || undefined,
+          page,
+          pageSize,
+        }),
+        api.statistics(startTime, endTime),
+        api.topTalkers({ ...insightsParams, limit: 8, scope: "internal" }),
+        api.topTalkers({ ...insightsParams, limit: 8, scope: "external" }),
+        api.throughput({ ...insightsParams, bucket }),
+        api.throughputByOutcome({ ...insightsParams, bucket }),
+        api.byPlatform(insightsParams),
+        api.handleTimeTrend({ ...insightsParams, bucket }),
+        api.agentHandleTime({ ...insightsParams, limit: 8 }),
+        api.queueWaitTrend({ ...insightsParams, bucket }),
+        api.queueWaitBreakdown({ ...insightsParams, limit: 8 }),
+        api.worstMosCalls({ ...insightsParams, limit: 8 }),
+        api.ivrTimeTrend({ ...insightsParams, bucket }),
+        api.ivrTimeByIvr({ ...insightsParams, limit: 8 }),
+      ]);
+      setRecords(pageRes.data);
+      setPagination(pageRes.pagination);
+      setStats(statsRes);
+      setTalkersInternal(internalRes.data);
+      setTalkersExternal(externalRes.data);
+      setThroughput(throughputRes.data);
+      setThroughputByOutcome(throughputOutcomeRes.data);
+      setPlatformBreakdown(platformRes.data);
+      setHandleTimeTrend(handleTimeRes.data);
+      setAgentHandleTime(agentHandleTimeRes.data);
+      setQueueWaitTrend(queueWaitRes.data);
+      setQueueWaitBreakdown(queueWaitBreakdownRes.data);
+      setWorstMosCalls(worstMosRes.data);
+      setIvrTimeTrend(ivrTimeRes.data);
+      setIvrTimeByIvr(ivrTimeByIvrRes.data);
+    } catch (e: any) {
+      setError(e.message ?? "Failed to load");
+      setRecords([]);
+      setPagination(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [startTime, endTime, mediaType, groups, sourcePlatformId, participant, queue, ivr, advanced, page, pageSize]);
+
+  useEffect(() => {
+    if (authUser) load();
+  }, [authUser, load]);
+  useEffect(() => {
+    api.health().then(setHealth).catch(() => setHealth(null));
+  }, []);
+
+  const applyFilters = () => {
+    setPage(1);
+    load();
+  };
+
+  const clearFilters = () => {
+    setGroups("");
+    setSourcePlatformId("");
+    setParticipant("");
+    setQueue("");
+    setIvr("");
+    setAdvanced("");
+    setPage(1);
+    load();
+  };
+
+  const changePageSize = (n: number) => {
+    setPageSize(n);
+    setPage(1);
+  };
+
+  // Presets apply immediately (no separate Apply click, matching how a range
+  // picker is expected to behave). Manual edits to From/To fall back to "custom"
+  // since the displayed range no longer matches a preset's rolling window.
+  const changeDatePreset = (preset: string) => {
+    setDatePreset(preset);
+    const range = computePresetRange(preset);
+    if (range) {
+      setStartTime(range.start);
+      setEndTime(range.end);
+      setPage(1);
+    }
+  };
+
+  const changeStartManually = (v: string) => {
+    setDatePreset("custom");
+    setStartTime(v);
+  };
+
+  const changeEndManually = (v: string) => {
+    setDatePreset("custom");
+    setEndTime(v);
+  };
+
+  // Drill-down from a Top Talkers row: layer the Participant filter on top of
+  // whatever's already active (media type, groups, date range, ...) rather than
+  // resetting the view, so "show me their calls" stays in the current context.
+  const selectTalker = (identity: string) => {
+    setParticipant(identity);
+    setPage(1);
+  };
+
+  // Drill-down from a Queue Wait Time row — same idea as selectTalker, layered
+  // on top of whatever's already active rather than resetting the view.
+  const selectQueue = (queueId: string) => {
+    setQueue(queueId);
+    setPage(1);
+  };
+
+  // Drill-down from an IVR Time row — same idea as selectQueue.
+  const selectIvr = (ivrId: string) => {
+    setIvr(ivrId);
+    setPage(1);
+  };
+
+  // Opening a call from the Worst MOS table opens its detail drawer directly
+  // (each row already identifies one specific call) rather than filtering the
+  // table — the same fetch-and-open path drillToCall uses below, just from a
+  // starting point with no currently-selected record to push onto a trail.
+  const openCallById = async (callId: string) => {
+    try {
+      const record = await api.getCall(callId);
+      selectRecord(record);
+    } catch (e: any) {
+      setError(e.message ?? `Couldn't load ${callId}`);
+    }
+  };
+
+  // Opening a record fresh from the table starts a new trail — any earlier
+  // drill-across history no longer applies to a different starting point.
+  const selectRecord = (r: CallRecord) => {
+    setSelected(r);
+    setDrillStack([]);
+    setDrillError(null);
+  };
+
+  const closeDrawer = () => {
+    setSelected(null);
+    setDrillStack([]);
+    setDrillError(null);
+  };
+
+  // Drill across from the open record to a parent/related call leg — fetches
+  // it and swaps the drawer to show it, pushing the current record onto a
+  // trail so "Back" can return to it. A leg outside the caller's access scope
+  // 404s the same as one that doesn't exist (see backend/getCallRecord), so
+  // this surfaces as an ordinary "not found" rather than anything scarier.
+  const drillToCall = async (callId: string) => {
+    if (!selected) return;
+    setDrillLoading(true);
+    setDrillError(null);
+    try {
+      const record = await api.getCall(callId);
+      setDrillStack((s) => [...s, selected]);
+      setSelected(record);
+    } catch (e: any) {
+      setDrillError(e.message ?? `Couldn't load ${callId}`);
+    } finally {
+      setDrillLoading(false);
+    }
+  };
+
+  const drillBack = () => {
+    if (drillStack.length === 0) return;
+    setSelected(drillStack[drillStack.length - 1]);
+    setDrillStack((s) => s.slice(0, -1));
+    setDrillError(null);
+  };
+
+  // Pulls every record matching the current filters (not just the visible
+  // page) by paging through the API at the max page size.
+  const fetchAllMatching = async (): Promise<CallRecord[]> => {
+    const base = {
+      startTime,
+      endTime,
+      mediaType: mediaType || undefined,
+      groups: groups || undefined,
+      sourcePlatformId: sourcePlatformId || undefined,
+      participant: participant || undefined,
+      queue: queue || undefined,
+      ivr: ivr || undefined,
+      advanced: advanced || undefined,
+      pageSize: 1000,
+    };
+    const first = await api.listCalls({ ...base, page: 1 });
+    const all = [...first.data];
+    for (let p = 2; p <= first.pagination.totalPages; p++) {
+      const res = await api.listCalls({ ...base, page: p });
+      all.push(...res.data);
+    }
+    return all;
+  };
+
+  const handleExport = async (format: "csv" | "json") => {
+    setExporting(true);
+    setError(null);
+    try {
+      const all = await fetchAllMatching();
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      if (format === "csv") {
+        downloadBlob(`cdr-export-${stamp}.csv`, toCsv(all), "text/csv;charset=utf-8");
+      } else {
+        downloadBlob(`cdr-export-${stamp}.json`, JSON.stringify(all, null, 2), "application/json");
+      }
+    } catch (e: any) {
+      setError(e.message ?? "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+    } finally {
+      setAuthUser(null);
+    }
+  };
+
+  if (!authChecked) {
+    return <div style={{ minHeight: "100vh", background: C.bg }} />;
+  }
+
+  if (!authUser) {
+    return <LoginScreen onLogin={setAuthUser} />;
+  }
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: C.bg,
+        color: C.ink,
+        fontFamily: SANS,
+      }}
+    >
+      <Header
+        health={health}
+        onIngest={() => setShowIngest(true)}
+        authUser={authUser}
+        onLogout={handleLogout}
+      />
+
+      <main style={{ maxWidth: 1280, margin: "0 auto", padding: "0 20px 64px" }}>
+        <FilterBar
+          startTime={startTime}
+          endTime={endTime}
+          datePreset={datePreset}
+          mediaType={mediaType}
+          groups={groups}
+          sourcePlatformId={sourcePlatformId}
+          participant={participant}
+          queue={queue}
+          ivr={ivr}
+          advanced={advanced}
+          onStart={changeStartManually}
+          onEnd={changeEndManually}
+          onPresetChange={changeDatePreset}
+          onMedia={setMediaType}
+          onGroups={setGroups}
+          onSourcePlatformId={setSourcePlatformId}
+          onParticipant={setParticipant}
+          onQueue={setQueue}
+          onIvr={setIvr}
+          onAdvanced={setAdvanced}
+          onApply={applyFilters}
+          onClear={clearFilters}
+          showExport={!!pagination && pagination.totalRecords > 0}
+          exporting={exporting}
+          onExport={handleExport}
+        />
+
+        {stats && <StatStrip stats={stats} total={pagination?.totalRecords ?? 0} />}
+
+        {(throughput.length > 0 || talkersInternal.length > 0 || talkersExternal.length > 0) && (
+          <InsightsPanel
+            throughput={throughput}
+            throughputByOutcome={throughputByOutcome}
+            platformBreakdown={platformBreakdown}
+            handleTimeTrend={handleTimeTrend}
+            agentHandleTime={agentHandleTime}
+            queueWaitTrend={queueWaitTrend}
+            queueWaitBreakdown={queueWaitBreakdown}
+            worstMosCalls={worstMosCalls}
+            ivrTimeTrend={ivrTimeTrend}
+            ivrTimeByIvr={ivrTimeByIvr}
+            talkersInternal={talkersInternal}
+            talkersExternal={talkersExternal}
+            talkersTab={talkersTab}
+            onTalkersTabChange={setTalkersTab}
+            onSelectTalker={selectTalker}
+            onSelectQueue={selectQueue}
+            onSelectIvr={selectIvr}
+            onOpenCall={openCallById}
+          />
+        )}
+
+        {error && (
+          <div
+            style={{
+              margin: "16px 0",
+              padding: "14px 16px",
+              borderRadius: 10,
+              background: C.roseSoft,
+              color: C.rose,
+              border: `1px solid ${C.rose}33`,
+              fontSize: 14,
+            }}
+          >
+            Couldn’t reach the CDR API — {error}. Check the backend is running on{" "}
+            <code style={{ fontFamily: MONO }}>/api/cdr/v1</code>.
+          </div>
+        )}
+
+        <RecordsTable
+          records={records}
+          loading={loading}
+          onSelect={selectRecord}
+          selectedId={selected?.callId}
+        />
+
+        {pagination && pagination.totalRecords > 0 && (
+          <Pager
+            pagination={pagination}
+            pageSize={pageSize}
+            onPageSizeChange={changePageSize}
+            onPrev={() => setPage((p) => Math.max(1, p - 1))}
+            onNext={() =>
+              setPage((p) => Math.min(pagination.totalPages, p + 1))
+            }
+          />
+        )}
+      </main>
+
+      {selected && (
+        <DetailDrawer
+          record={selected}
+          onClose={closeDrawer}
+          onBack={drillStack.length > 0 ? drillBack : undefined}
+          onDrill={drillToCall}
+          drillLoading={drillLoading}
+          drillError={drillError}
+        />
+      )}
+      {showIngest && (
+        <IngestModal
+          onClose={() => setShowIngest(false)}
+          onDone={() => {
+            setShowIngest(false);
+            load();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Login ────────────────────────────────────────────────────────────────────
+function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const user = await api.login(username, password);
+      onLogin(user);
+    } catch (e: any) {
+      setError(e.message ?? "Login failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    padding: "10px 12px",
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    background: C.surface,
+    fontSize: 14,
+    color: C.ink,
+    fontFamily: SANS,
+    outline: "none",
+    boxSizing: "border-box",
+  };
+  const labelStyle: React.CSSProperties = {
+    fontSize: 10.5,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: C.textMuted,
+    fontWeight: 700,
+    marginBottom: 5,
+    display: "block",
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: C.bg,
+        color: C.ink,
+        fontFamily: SANS,
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+      }}
+    >
+      <form
+        onSubmit={submit}
+        style={{
+          width: 360,
+          maxWidth: "100%",
+          background: C.surface,
+          border: `1px solid ${C.border}`,
+          borderRadius: 14,
+          boxShadow: "0 14px 34px rgba(15,22,32,0.10)",
+          padding: 28,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 22 }}>
+          <div
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 9,
+              background: C.accent,
+              display: "grid",
+              placeItems: "center",
+              color: "#fff",
+              fontSize: 17,
+              boxShadow: `0 2px 8px ${C.accent}44`,
+            }}
+          >
+            ◍
+          </div>
+          <div style={{ lineHeight: 1.1 }}>
+            <div style={{ fontWeight: 750, fontSize: 16, letterSpacing: -0.2 }}>
+              Open CDR Platform
+            </div>
+            <div style={{ fontSize: 11.5, color: C.textMuted }}>Sign in to continue</div>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={labelStyle}>Username</label>
+          <input
+            type="text"
+            autoFocus
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            style={inputStyle}
+          />
+        </div>
+        <div style={{ marginBottom: 18 }}>
+          <label style={labelStyle}>Password</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            style={inputStyle}
+          />
+        </div>
+
+        {error && (
+          <div
+            style={{
+              marginBottom: 14,
+              padding: "10px 12px",
+              borderRadius: 8,
+              background: C.roseSoft,
+              color: C.rose,
+              fontSize: 13,
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        <button
+          type="submit"
+          disabled={busy || !username || !password}
+          style={{
+            width: "100%",
+            padding: "10px 14px",
+            borderRadius: 8,
+            border: "none",
+            background: busy || !username || !password ? C.borderStrong : C.accent,
+            color: "#fff",
+            fontSize: 14,
+            fontWeight: 650,
+            cursor: busy || !username || !password ? "default" : "pointer",
+          }}
+        >
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// ─── Header ───────────────────────────────────────────────────────────────────
+function Header({
+  health,
+  onIngest,
+  authUser,
+  onLogout,
+}: {
+  health: { status: string; apiVersion: string } | null;
+  onIngest: () => void;
+  authUser: AuthUser;
+  onLogout: () => void;
+}) {
+  const ok = health?.status === "healthy";
+  return (
+    <header
+      style={{
+        borderBottom: `1px solid ${C.border}`,
+        background: C.surface,
+        position: "sticky",
+        top: 0,
+        zIndex: 20,
+      }}
+    >
+      <div
+        style={{
+          maxWidth: 1280,
+          margin: "0 auto",
+          padding: "14px 20px",
+          display: "flex",
+          alignItems: "center",
+          gap: 16,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+          <div
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 9,
+              background: C.accent,
+              display: "grid",
+              placeItems: "center",
+              color: "#fff",
+              fontSize: 17,
+              boxShadow: `0 2px 8px ${C.accent}44`,
+            }}
+          >
+            ◍
+          </div>
+          <div style={{ lineHeight: 1.1 }}>
+            <div style={{ fontWeight: 750, fontSize: 16, letterSpacing: -0.2 }}>
+              Open CDR Platform
+            </div>
+            <div style={{ fontSize: 11.5, color: C.textMuted }}>
+              Call detail records · open standard v{health?.apiVersion ?? "1.0.0"}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 14 }}>
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12.5,
+              color: C.textMid,
+            }}
+          >
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 999,
+                background: ok ? C.teal : C.rose,
+                boxShadow: ok ? `0 0 0 3px ${C.tealSoft}` : `0 0 0 3px ${C.roseSoft}`,
+              }}
+            />
+            {ok ? "API healthy" : "API unreachable"}
+          </span>
+          <HeaderMenu authUser={authUser} onLogout={onLogout} />
+          <button
+            onClick={onIngest}
+            style={{
+              padding: "8px 15px",
+              borderRadius: 8,
+              border: "none",
+              background: C.accent,
+              color: "#fff",
+              fontSize: 13,
+              fontWeight: 650,
+              cursor: "pointer",
+            }}
+          >
+            Ingest records
+          </button>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function fmtRelative(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+// Houses the peripheral, infrequently-used header items (API docs, backups)
+// behind one icon button — keeps the always-visible header down to logo,
+// health, this menu, and the primary Ingest CTA, rather than growing a new
+// button for every admin-ish thing (backups today, more later).
+function HeaderMenu({
+  authUser,
+  onLogout,
+}: {
+  authUser: AuthUser;
+  onLogout: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [backups, setBackups] = useState<BackupStatus | null>(null);
+  const [loadingBackups, setLoadingBackups] = useState(false);
+  const [adminKey, setAdminKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [showAuditLog, setShowAuditLog] = useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const refreshBackups = () => {
+    setLoadingBackups(true);
+    api
+      .backupStatus()
+      .then(setBackups)
+      .catch(() => setBackups(null))
+      .finally(() => setLoadingBackups(false));
+  };
+
+  useEffect(() => {
+    if (!open || backups || loadingBackups) return;
+    refreshBackups();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const handleBackupNow = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const result = await api.triggerBackup(adminKey || undefined);
+      setMsg({ ok: true, text: `Backed up (${(result.sizeBytes / 1024).toFixed(0)} KB)` });
+      refreshBackups();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Backup failed" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDownload = async (filename: string) => {
+    setMsg(null);
+    try {
+      const blob = await api.downloadBackupBlob(filename, adminKey || undefined);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Download failed" });
+    }
+  };
+
+  const handleRestoreFile = async (file: File) => {
+    if (
+      !window.confirm(
+        `Restore "${file.name}"? This replaces the current database outright — everything in it now will be gone.`
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      const result = await api.restoreBackup(file, adminKey || undefined);
+      setMsg({ ok: true, text: result.message });
+      refreshBackups();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Restore failed" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const latest = backups?.data[0];
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title="Menu"
+        aria-label="Menu"
+        style={{
+          width: 32,
+          height: 32,
+          display: "inline-grid",
+          placeItems: "center",
+          borderRadius: 8,
+          border: `1px solid ${C.border}`,
+          background: C.surface,
+          color: C.textMid,
+          cursor: "pointer",
+          fontSize: 16,
+          lineHeight: 1,
+        }}
+      >
+        ⋯
+      </button>
+      {open && (
+        <>
+          <div
+            onClick={() => setOpen(false)}
+            style={{ position: "fixed", inset: 0, zIndex: 29 }}
+          />
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(100% + 6px)",
+              right: 0,
+              zIndex: 30,
+              width: 340,
+              maxHeight: "calc(100vh - 80px)",
+              overflowY: "auto",
+              background: C.surface,
+              border: `1px solid ${C.border}`,
+              borderRadius: 12,
+              boxShadow: "0 14px 34px rgba(15,22,32,0.16)",
+              padding: 6,
+            }}
+          >
+            <div style={{ padding: "8px 10px", display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 650,
+                    color: C.ink,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                  title={authUser.username}
+                >
+                  {authUser.username}
+                </div>
+                <div style={{ fontSize: 11, color: C.textMuted, textTransform: "capitalize" }}>
+                  {authUser.role}
+                </div>
+              </div>
+              <button
+                onClick={onLogout}
+                style={{
+                  padding: "5px 10px",
+                  borderRadius: 6,
+                  border: `1px solid ${C.border}`,
+                  background: C.surfaceAlt,
+                  color: C.textMid,
+                  fontSize: 12,
+                  fontWeight: 650,
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+              >
+                Log out
+              </button>
+            </div>
+            <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
+            <ApiKeysSection />
+            <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
+            <a
+              href="/api/cdr/v1/docs"
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                display: "block",
+                padding: "9px 10px",
+                borderRadius: 8,
+                fontSize: 13,
+                color: C.ink,
+                textDecoration: "none",
+                fontWeight: 600,
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = C.surfaceAlt)}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              API docs ↗
+            </a>
+            <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
+            <div style={{ padding: "8px 10px" }}>
+              <div
+                style={{
+                  fontSize: 10.5,
+                  letterSpacing: 0.5,
+                  textTransform: "uppercase",
+                  color: C.textMuted,
+                  fontWeight: 700,
+                  marginBottom: 6,
+                }}
+              >
+                Backups
+              </div>
+
+              {loadingBackups ? (
+                <div style={{ fontSize: 12.5, color: C.textMuted }}>Loading…</div>
+              ) : !backups?.configured ? (
+                <div style={{ fontSize: 12.5, color: C.textMuted }}>
+                  Not configured — see README for the `backup` compose service.
+                </div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 13, color: C.ink, fontWeight: 600 }}>
+                    {latest ? `Last backup: ${fmtRelative(latest.createdAt)}` : "No backups yet"}
+                  </div>
+                  <div
+                    style={{ fontSize: 11.5, color: C.textMuted, fontFamily: MONO, marginTop: 2 }}
+                  >
+                    {backups.data.length} kept · {backups.retentionDays}d retention · every{" "}
+                    {backups.intervalHours}h
+                  </div>
+
+                  {backups.data.length > 0 && (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        maxHeight: 130,
+                        overflowY: "auto",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 3,
+                      }}
+                    >
+                      {backups.data.slice(0, 5).map((b) => (
+                        <div
+                          key={b.filename}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            fontSize: 11.5,
+                            padding: "3px 0",
+                          }}
+                        >
+                          <span
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              color: C.textMid,
+                              fontFamily: MONO,
+                            }}
+                            title={b.filename}
+                          >
+                            {fmtRelative(b.createdAt)}
+                          </span>
+                          <span style={{ color: C.textMuted, flexShrink: 0 }}>
+                            {(b.sizeBytes / 1024).toFixed(0)}KB
+                          </span>
+                          <button
+                            onClick={() => handleDownload(b.filename)}
+                            title={`Download ${b.filename}`}
+                            style={{
+                              border: "none",
+                              background: "transparent",
+                              color: C.accentDeep,
+                              cursor: "pointer",
+                              fontSize: 12,
+                              fontWeight: 650,
+                              flexShrink: 0,
+                              padding: "1px 3px",
+                            }}
+                          >
+                            ⬇
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <input
+                    type="password"
+                    placeholder="Admin key (if configured)"
+                    value={adminKey}
+                    onChange={(e) => setAdminKey(e.target.value)}
+                    style={{
+                      width: "100%",
+                      marginTop: 10,
+                      padding: "6px 8px",
+                      borderRadius: 6,
+                      border: `1px solid ${C.border}`,
+                      fontSize: 12,
+                      fontFamily: MONO,
+                      outline: "none",
+                      boxSizing: "border-box",
+                    }}
+                  />
+
+                  <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                    <button
+                      onClick={handleBackupNow}
+                      disabled={busy}
+                      style={{
+                        flex: 1,
+                        padding: "7px 10px",
+                        borderRadius: 6,
+                        border: "none",
+                        background: busy ? C.borderStrong : C.ink,
+                        color: "#fff",
+                        fontSize: 12,
+                        fontWeight: 650,
+                        cursor: busy ? "default" : "pointer",
+                      }}
+                    >
+                      Backup now
+                    </button>
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={busy}
+                      title="Restore from a .dump file"
+                      style={{
+                        flex: 1,
+                        padding: "7px 10px",
+                        borderRadius: 6,
+                        border: `1px solid ${C.rose}`,
+                        background: C.roseSoft,
+                        color: C.rose,
+                        fontSize: 12,
+                        fontWeight: 650,
+                        cursor: busy ? "default" : "pointer",
+                      }}
+                    >
+                      Restore…
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".dump"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (file) handleRestoreFile(file);
+                      }}
+                    />
+                  </div>
+
+                  {msg && (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        padding: "6px 8px",
+                        borderRadius: 6,
+                        fontSize: 11.5,
+                        background: msg.ok ? C.tealSoft : C.roseSoft,
+                        color: msg.ok ? C.teal : C.rose,
+                      }}
+                    >
+                      {msg.text}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {authUser.role === "admin" && (
+              <>
+                <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
+                <button
+                  onClick={() => {
+                    setShowAuditLog(true);
+                    setOpen(false);
+                  }}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    textAlign: "left",
+                    padding: "9px 10px",
+                    borderRadius: 8,
+                    border: "none",
+                    background: "transparent",
+                    fontSize: 13,
+                    color: C.ink,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = C.surfaceAlt)}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  Audit log
+                </button>
+                <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
+                <UsersSection currentUsername={authUser.username} />
+              </>
+            )}
+          </div>
+        </>
+      )}
+      {showAuditLog && <AuditLogModal onClose={() => setShowAuditLog(false)} />}
+    </div>
+  );
+}
+
+// Self-service API keys — every logged-in user manages their own, unlike
+// UsersSection below which is admin-only. A key acts as its owner: same
+// role, same scope, enforced the same way the session cookie already is
+// (see requireAuth/scopeFilters on the backend).
+function ApiKeysSection() {
+  const [keys, setKeys] = useState<ApiKeyMeta[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [revealed, setRevealed] = useState<{ name: string; key: string } | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const refresh = () => {
+    setLoading(true);
+    api.apiKeys
+      .list()
+      .then((res) => setKeys(res.data))
+      .catch(() => setKeys(null))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      const created = await api.apiKeys.create(newName);
+      setRevealed({ name: created.name, key: created.key });
+      setNewName("");
+      setShowAdd(false);
+      refresh();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Couldn’t create key" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async (k: ApiKeyMeta) => {
+    if (
+      !window.confirm(`Revoke API key "${k.name}"? Anything using it will stop working immediately.`)
+    ) {
+      return;
+    }
+    setMsg(null);
+    try {
+      await api.apiKeys.remove(k.id);
+      if (revealed) setRevealed(null);
+      refresh();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Couldn’t revoke key" });
+    }
+  };
+
+  const smallInput: React.CSSProperties = {
+    width: "100%",
+    padding: "6px 8px",
+    borderRadius: 6,
+    border: `1px solid ${C.border}`,
+    fontSize: 12,
+    fontFamily: SANS,
+    outline: "none",
+    boxSizing: "border-box",
+  };
+
+  return (
+    <div style={{ padding: "8px 10px" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 6,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 10.5,
+            letterSpacing: 0.5,
+            textTransform: "uppercase",
+            color: C.textMuted,
+            fontWeight: 700,
+          }}
+        >
+          API keys
+        </div>
+        <button
+          onClick={() => {
+            setShowAdd((v) => !v);
+            setRevealed(null);
+          }}
+          style={{
+            border: "none",
+            background: "transparent",
+            color: C.accentDeep,
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: 650,
+            padding: 0,
+          }}
+        >
+          {showAdd ? "Cancel" : "+ New key"}
+        </button>
+      </div>
+
+      {revealed && (
+        <div
+          style={{
+            marginBottom: 8,
+            padding: "8px 9px",
+            borderRadius: 6,
+            background: C.tealSoft,
+            border: `1px solid ${C.teal}44`,
+          }}
+        >
+          <div style={{ fontSize: 11.5, color: C.teal, fontWeight: 650, marginBottom: 4 }}>
+            “{revealed.name}” created — copy it now, it won’t be shown again:
+          </div>
+          <div
+            style={{
+              fontFamily: MONO,
+              fontSize: 11.5,
+              color: C.ink,
+              background: C.surface,
+              border: `1px solid ${C.border}`,
+              borderRadius: 5,
+              padding: "6px 7px",
+              wordBreak: "break-all",
+              userSelect: "all",
+              cursor: "text",
+            }}
+          >
+            {revealed.key}
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ fontSize: 12.5, color: C.textMuted }}>Loading…</div>
+      ) : !keys || keys.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: C.textMuted }}>No API keys yet.</div>
+      ) : (
+        <div
+          style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 150, overflowY: "auto" }}
+        >
+          {keys.map((k) => (
+            <div
+              key={k.id}
+              style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 12 }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    color: C.ink,
+                    fontWeight: 600,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                  title={k.name}
+                >
+                  {k.name}
+                </div>
+                <div style={{ color: C.textMuted, fontSize: 11, fontFamily: MONO }}>
+                  {k.keyPrefix}… · {k.lastUsedAt ? `used ${fmtRelative(k.lastUsedAt)}` : "never used"}
+                </div>
+              </div>
+              <button
+                onClick={() => handleDelete(k)}
+                title={`Revoke ${k.name}`}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  color: C.rose,
+                  cursor: "pointer",
+                  fontSize: 12,
+                  flexShrink: 0,
+                  padding: "1px 3px",
+                }}
+              >
+                Revoke
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showAdd && (
+        <form onSubmit={handleAdd} style={{ marginTop: 10, display: "flex", gap: 6 }}>
+          <input
+            placeholder="Key name (e.g. laptop script)"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            required
+            style={smallInput}
+          />
+          <button
+            type="submit"
+            disabled={busy}
+            style={{
+              padding: "7px 12px",
+              borderRadius: 6,
+              border: "none",
+              background: busy ? C.borderStrong : C.ink,
+              color: "#fff",
+              fontSize: 12,
+              fontWeight: 650,
+              cursor: busy ? "default" : "pointer",
+              flexShrink: 0,
+            }}
+          >
+            {busy ? "…" : "Create"}
+          </button>
+        </form>
+      )}
+
+      {msg && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: "6px 8px",
+            borderRadius: 6,
+            fontSize: 11.5,
+            background: msg.ok ? C.tealSoft : C.roseSoft,
+            color: msg.ok ? C.teal : C.rose,
+          }}
+        >
+          {msg.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Admin-only user management, folded into the ⋯ menu rather than a separate
+// settings page — list existing users, add one, delete one. Editing role/scope
+// of an existing user isn't exposed in the UI yet (delete + recreate covers
+// it for now); the PATCH endpoint exists for future use.
+function UsersSection({ currentUsername }: { currentUsername: string }) {
+  const [users, setUsers] = useState<ManagedUser[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState<"admin" | "viewer">("viewer");
+  const [newGroups, setNewGroups] = useState("");
+  const [newPlatforms, setNewPlatforms] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  // Only one row edits at a time — mutually exclusive with the add-user form.
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editRole, setEditRole] = useState<"admin" | "viewer">("viewer");
+  const [editGroups, setEditGroups] = useState("");
+  const [editPlatforms, setEditPlatforms] = useState("");
+  const [editPassword, setEditPassword] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+
+  const refresh = () => {
+    setLoading(true);
+    api.users
+      .list()
+      .then((res) => setUsers(res.data))
+      .catch(() => setUsers(null))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const parseScope = (v: string) => {
+    const list = v
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return list.length ? list : null;
+  };
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.users.create({
+        username: newUsername,
+        password: newPassword,
+        role: newRole,
+        allowedGroups: parseScope(newGroups),
+        allowedSourcePlatformIds: parseScope(newPlatforms),
+      });
+      setNewUsername("");
+      setNewPassword("");
+      setNewRole("viewer");
+      setNewGroups("");
+      setNewPlatforms("");
+      setShowAdd(false);
+      refresh();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Couldn’t create user" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async (user: ManagedUser) => {
+    if (!window.confirm(`Delete user "${user.username}"? This can’t be undone.`)) return;
+    setMsg(null);
+    try {
+      await api.users.remove(user.id);
+      refresh();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Couldn’t delete user" });
+    }
+  };
+
+  const startEdit = (user: ManagedUser) => {
+    setShowAdd(false);
+    setMsg(null);
+    setEditingId(user.id);
+    setEditRole(user.role);
+    setEditGroups((user.allowedGroups ?? []).join(", "));
+    setEditPlatforms((user.allowedSourcePlatformIds ?? []).join(", "));
+    setEditPassword("");
+  };
+
+  const cancelEdit = () => setEditingId(null);
+
+  const handleEditSubmit = async (e: React.FormEvent, user: ManagedUser) => {
+    e.preventDefault();
+    if (
+      user.username === currentUsername &&
+      editRole !== "admin" &&
+      !window.confirm(
+        "You're changing your own role away from admin — you'll lose admin access immediately. Continue?"
+      )
+    ) {
+      return;
+    }
+    setEditBusy(true);
+    setMsg(null);
+    try {
+      await api.users.update(user.id, {
+        role: editRole,
+        allowedGroups: parseScope(editGroups),
+        allowedSourcePlatformIds: parseScope(editPlatforms),
+        ...(editPassword ? { password: editPassword } : {}),
+      });
+      setEditingId(null);
+      refresh();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Couldn’t update user" });
+    } finally {
+      setEditBusy(false);
+    }
+  };
+
+  const scopeLabel = (list: string[] | null) => (list ? list.join(", ") : "unrestricted");
+
+  const smallInput: React.CSSProperties = {
+    width: "100%",
+    padding: "6px 8px",
+    borderRadius: 6,
+    border: `1px solid ${C.border}`,
+    fontSize: 12,
+    fontFamily: SANS,
+    outline: "none",
+    boxSizing: "border-box",
+  };
+
+  return (
+    <div style={{ padding: "8px 10px" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 6,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 10.5,
+            letterSpacing: 0.5,
+            textTransform: "uppercase",
+            color: C.textMuted,
+            fontWeight: 700,
+          }}
+        >
+          Users
+        </div>
+        <button
+          onClick={() => {
+            setEditingId(null);
+            setShowAdd((v) => !v);
+          }}
+          style={{
+            border: "none",
+            background: "transparent",
+            color: C.accentDeep,
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: 650,
+            padding: 0,
+          }}
+        >
+          {showAdd ? "Cancel" : "+ Add user"}
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={{ fontSize: 12.5, color: C.textMuted }}>Loading…</div>
+      ) : !users || users.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: C.textMuted }}>No users yet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 220, overflowY: "auto" }}>
+          {users.map((u) =>
+            editingId === u.id ? (
+              <form
+                key={u.id}
+                onSubmit={(e) => handleEditSubmit(e, u)}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  padding: "8px 0",
+                  borderTop: `1px solid ${C.border}`,
+                }}
+              >
+                <div style={{ fontWeight: 650, fontSize: 12, color: C.ink }}>
+                  Editing {u.username}
+                </div>
+                <select
+                  value={editRole}
+                  onChange={(e) => setEditRole(e.target.value as "admin" | "viewer")}
+                  style={smallInput}
+                >
+                  <option value="viewer">Viewer</option>
+                  <option value="admin">Admin</option>
+                </select>
+                <input
+                  placeholder="Allowed groups (blank = unrestricted)"
+                  value={editGroups}
+                  onChange={(e) => setEditGroups(e.target.value)}
+                  style={smallInput}
+                />
+                <input
+                  placeholder="Allowed source platform IDs (blank = unrestricted)"
+                  value={editPlatforms}
+                  onChange={(e) => setEditPlatforms(e.target.value)}
+                  style={smallInput}
+                />
+                <input
+                  type="password"
+                  placeholder="New password (leave blank to keep current)"
+                  value={editPassword}
+                  onChange={(e) => setEditPassword(e.target.value)}
+                  minLength={8}
+                  style={smallInput}
+                />
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    type="submit"
+                    disabled={editBusy}
+                    style={{
+                      flex: 1,
+                      padding: "7px 10px",
+                      borderRadius: 6,
+                      border: "none",
+                      background: editBusy ? C.borderStrong : C.ink,
+                      color: "#fff",
+                      fontSize: 12,
+                      fontWeight: 650,
+                      cursor: editBusy ? "default" : "pointer",
+                    }}
+                  >
+                    {editBusy ? "Saving…" : "Save"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={cancelEdit}
+                    style={{
+                      flex: 1,
+                      padding: "7px 10px",
+                      borderRadius: 6,
+                      border: `1px solid ${C.border}`,
+                      background: C.surface,
+                      color: C.textMid,
+                      fontSize: 12,
+                      fontWeight: 650,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div
+                key={u.id}
+                style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 12 }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: C.ink, fontWeight: 600 }}>
+                    {u.username}{" "}
+                    <span style={{ color: C.textMuted, fontWeight: 500 }}>· {u.role}</span>
+                  </div>
+                  <div
+                    style={{
+                      color: C.textMuted,
+                      fontSize: 11,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={`Groups: ${scopeLabel(u.allowedGroups)} · Platforms: ${scopeLabel(u.allowedSourcePlatformIds)}`}
+                  >
+                    {scopeLabel(u.allowedGroups)} / {scopeLabel(u.allowedSourcePlatformIds)}
+                  </div>
+                </div>
+                <button
+                  onClick={() => startEdit(u)}
+                  title={`Edit ${u.username}`}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: C.accentDeep,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    flexShrink: 0,
+                    padding: "1px 3px",
+                  }}
+                >
+                  Edit
+                </button>
+                {u.username !== currentUsername && (
+                  <button
+                    onClick={() => handleDelete(u)}
+                    title={`Delete ${u.username}`}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: C.rose,
+                      cursor: "pointer",
+                      fontSize: 12,
+                      flexShrink: 0,
+                      padding: "1px 3px",
+                    }}
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+            )
+          )}
+        </div>
+      )}
+
+      {showAdd && (
+        <form onSubmit={handleAdd} style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+          <input
+            placeholder="Username"
+            value={newUsername}
+            onChange={(e) => setNewUsername(e.target.value)}
+            required
+            style={smallInput}
+          />
+          <input
+            type="password"
+            placeholder="Password (min 8 characters)"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            required
+            minLength={8}
+            style={smallInput}
+          />
+          <select
+            value={newRole}
+            onChange={(e) => setNewRole(e.target.value as "admin" | "viewer")}
+            style={smallInput}
+          >
+            <option value="viewer">Viewer</option>
+            <option value="admin">Admin</option>
+          </select>
+          <input
+            placeholder="Allowed groups (blank = unrestricted)"
+            value={newGroups}
+            onChange={(e) => setNewGroups(e.target.value)}
+            style={smallInput}
+          />
+          <input
+            placeholder="Allowed source platform IDs (blank = unrestricted)"
+            value={newPlatforms}
+            onChange={(e) => setNewPlatforms(e.target.value)}
+            style={smallInput}
+          />
+          <button
+            type="submit"
+            disabled={busy}
+            style={{
+              padding: "7px 10px",
+              borderRadius: 6,
+              border: "none",
+              background: busy ? C.borderStrong : C.ink,
+              color: "#fff",
+              fontSize: 12,
+              fontWeight: 650,
+              cursor: busy ? "default" : "pointer",
+            }}
+          >
+            {busy ? "Creating…" : "Create user"}
+          </button>
+        </form>
+      )}
+
+      {msg && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: "6px 8px",
+            borderRadius: 6,
+            fontSize: 11.5,
+            background: msg.ok ? C.tealSoft : C.roseSoft,
+            color: msg.ok ? C.teal : C.rose,
+          }}
+        >
+          {msg.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Filter bar ───────────────────────────────────────────────────────────────
+function FilterBar(props: {
+  startTime: string;
+  endTime: string;
+  datePreset: string;
+  mediaType: string;
+  groups: string;
+  sourcePlatformId: string;
+  participant: string;
+  queue: string;
+  ivr: string;
+  advanced: string;
+  onStart: (v: string) => void;
+  onEnd: (v: string) => void;
+  onPresetChange: (v: string) => void;
+  onMedia: (v: string) => void;
+  onGroups: (v: string) => void;
+  onSourcePlatformId: (v: string) => void;
+  onParticipant: (v: string) => void;
+  onQueue: (v: string) => void;
+  onIvr: (v: string) => void;
+  onAdvanced: (v: string) => void;
+  onApply: () => void;
+  onClear: () => void;
+  showExport: boolean;
+  exporting: boolean;
+  onExport: (format: "csv" | "json") => void;
+}) {
+  const [showMore, setShowMore] = useState(false);
+  const activeCount = [
+    props.groups,
+    props.sourcePlatformId,
+    props.participant,
+    props.queue,
+    props.ivr,
+    props.advanced,
+  ].filter((v) => v.trim().length > 0).length;
+  const inputStyle: React.CSSProperties = {
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    background: C.surface,
+    fontSize: 13,
+    color: C.ink,
+    fontFamily: SANS,
+    outline: "none",
+  };
+  const labelStyle: React.CSSProperties = {
+    fontSize: 10.5,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: C.textMuted,
+    fontWeight: 700,
+    marginBottom: 4,
+    display: "block",
+  };
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 14,
+        flexWrap: "wrap",
+        alignItems: "flex-end",
+        padding: "18px 0 6px",
+      }}
+    >
+      <div>
+        <label style={labelStyle}>Range</label>
+        <select
+          value={props.datePreset}
+          onChange={(e) => props.onPresetChange(e.target.value)}
+          style={{ ...inputStyle, minWidth: 140 }}
+        >
+          {DATE_PRESETS.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label style={labelStyle}>From (UTC window)</label>
+        <input
+          type="datetime-local"
+          value={isoToLocalInput(props.startTime)}
+          onChange={(e) => props.onStart(localInputToIso(e.target.value))}
+          style={inputStyle}
+        />
+      </div>
+      <div>
+        <label style={labelStyle}>To</label>
+        <input
+          type="datetime-local"
+          value={isoToLocalInput(props.endTime)}
+          onChange={(e) => props.onEnd(localInputToIso(e.target.value))}
+          style={inputStyle}
+        />
+      </div>
+      <div>
+        <label style={labelStyle}>Media type</label>
+        <select
+          value={props.mediaType}
+          onChange={(e) => props.onMedia(e.target.value)}
+          style={{ ...inputStyle, minWidth: 130 }}
+        >
+          <option value="">All media</option>
+          <option value="voice">Voice</option>
+          <option value="video">Video</option>
+          <option value="chat">Chat</option>
+          <option value="instant_message">Instant message</option>
+          <option value="email">Email</option>
+        </select>
+      </div>
+      <div style={{ position: "relative", display: "flex", alignItems: "flex-end", gap: 6 }}>
+        <div>
+          <label style={labelStyle}>&nbsp;</label>
+          <button
+            onClick={() => setShowMore((v) => !v)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              padding: "8px 14px",
+              borderRadius: 8,
+              border: `1px solid ${activeCount ? C.accent : C.border}`,
+              background: activeCount ? C.accentSoft : C.surface,
+              color: activeCount ? C.accentDeep : C.ink,
+              fontSize: 13,
+              fontWeight: 650,
+              cursor: "pointer",
+            }}
+          >
+            ⚙ Filters
+            {activeCount > 0 && (
+              <span
+                style={{
+                  display: "inline-grid",
+                  placeItems: "center",
+                  minWidth: 17,
+                  height: 17,
+                  padding: "0 4px",
+                  borderRadius: 999,
+                  background: C.accent,
+                  color: "#fff",
+                  fontSize: 10.5,
+                  fontWeight: 700,
+                }}
+              >
+                {activeCount}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {activeCount > 0 && (
+          <button
+            onClick={() => {
+              props.onClear();
+              setShowMore(false);
+            }}
+            title="Clear filters"
+            aria-label="Clear filters"
+            style={{
+              width: 34,
+              height: 34,
+              display: "inline-grid",
+              placeItems: "center",
+              borderRadius: 8,
+              border: `1px solid ${C.border}`,
+              background: C.surface,
+              color: C.textMid,
+              fontSize: 15,
+              cursor: "pointer",
+            }}
+          >
+            ×
+          </button>
+        )}
+
+        {showMore && (
+          <>
+            <div
+              onClick={() => setShowMore(false)}
+              style={{ position: "fixed", inset: 0, zIndex: 29 }}
+            />
+            <div
+              style={{
+                position: "absolute",
+                top: "calc(100% + 6px)",
+                left: 0,
+                zIndex: 30,
+                width: 320,
+                background: C.surface,
+                border: `1px solid ${C.border}`,
+                borderRadius: 12,
+                boxShadow: "0 14px 34px rgba(15,22,32,0.16)",
+                padding: 16,
+                display: "flex",
+                flexDirection: "column",
+                gap: 12,
+              }}
+            >
+              <div>
+                <label style={labelStyle}>Groups (comma-separated)</label>
+                <input
+                  type="text"
+                  placeholder="trading-floor-london, compliance-group-1"
+                  value={props.groups}
+                  onChange={(e) => props.onGroups(e.target.value)}
+                  style={{ ...inputStyle, width: "100%" }}
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>Source platforms (comma-separated)</label>
+                <input
+                  type="text"
+                  placeholder="switch-lon-01, switch-nyc-02"
+                  value={props.sourcePlatformId}
+                  onChange={(e) => props.onSourcePlatformId(e.target.value)}
+                  style={{ ...inputStyle, width: "100%" }}
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>Participant</label>
+                <input
+                  type="text"
+                  placeholder="name, user ID, or extension"
+                  value={props.participant}
+                  onChange={(e) => props.onParticipant(e.target.value)}
+                  style={{ ...inputStyle, width: "100%" }}
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>Queue (comma-separated)</label>
+                <input
+                  type="text"
+                  placeholder="support-queue-nyc, billing-queue-nyc"
+                  value={props.queue}
+                  onChange={(e) => props.onQueue(e.target.value)}
+                  style={{ ...inputStyle, width: "100%" }}
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>IVR (comma-separated)</label>
+                <input
+                  type="text"
+                  placeholder="main-ivr, billing-ivr"
+                  value={props.ivr}
+                  onChange={(e) => props.onIvr(e.target.value)}
+                  style={{ ...inputStyle, width: "100%" }}
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>Advanced (comma-separated)</label>
+                <input
+                  type="text"
+                  placeholder="mos < 3, jitter > 50"
+                  value={props.advanced}
+                  onChange={(e) => props.onAdvanced(e.target.value)}
+                  style={{ ...inputStyle, width: "100%", fontFamily: MONO }}
+                />
+                <div style={{ fontSize: 10.5, color: C.textMuted, marginTop: 4 }}>
+                  Fields: mos, jitter, latency, packetLoss, duration, ivrTime, queueTime · operators: &lt; &lt;= &gt; &gt;= = !=
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => {
+                    props.onApply();
+                    setShowMore(false);
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: "9px 14px",
+                    borderRadius: 8,
+                    border: "none",
+                    background: C.ink,
+                    color: "#fff",
+                    fontSize: 13,
+                    fontWeight: 650,
+                    cursor: "pointer",
+                  }}
+                >
+                  Apply filters
+                </button>
+                {activeCount > 0 && (
+                  <button
+                    onClick={() => {
+                      props.onClear();
+                      setShowMore(false);
+                    }}
+                    style={{
+                      padding: "9px 14px",
+                      borderRadius: 8,
+                      border: `1px solid ${C.border}`,
+                      background: C.surface,
+                      color: C.textMid,
+                      fontSize: 13,
+                      fontWeight: 650,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+      <button
+        onClick={props.onApply}
+        style={{
+          padding: "9px 18px",
+          borderRadius: 8,
+          border: "none",
+          background: C.ink,
+          color: "#fff",
+          fontSize: 13,
+          fontWeight: 650,
+          cursor: "pointer",
+        }}
+      >
+        Apply
+      </button>
+
+      {props.showExport && (
+        <div style={{ marginLeft: "auto" }}>
+          <ExportMenu busy={props.exporting} onExport={props.onExport} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Stat strip ───────────────────────────────────────────────────────────────
+function StatStrip({ stats, total }: { stats: StatisticsSummary; total: number }) {
+  const v = stats.voiceBreakdown;
+  const cells: { label: string; value: string; sub?: string; fg?: string }[] = [
+    { label: "Records in window", value: String(total) },
+    {
+      label: "Answered (voice)",
+      value: String(v.maturedAnswered),
+      fg: C.teal,
+    },
+    {
+      label: "Unanswered (voice)",
+      value: String(v.unmaturedUnanswered),
+      fg: C.rose,
+    },
+    {
+      label: "Avg time in queue",
+      value: fmtDur(stats.averageDurations.avgTimeInQueueSeconds),
+    },
+    {
+      label: "Avg talk time",
+      value: fmtDur(stats.averageDurations.avgTimeWithAgentSeconds),
+    },
+  ];
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: `repeat(auto-fit, minmax(150px, 1fr))`,
+        gap: 12,
+        margin: "8px 0 4px",
+      }}
+    >
+      {cells.map((c) => (
+        <div
+          key={c.label}
+          style={{
+            background: C.surface,
+            border: `1px solid ${C.border}`,
+            borderRadius: 12,
+            padding: "14px 16px",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 10.5,
+              letterSpacing: 0.5,
+              textTransform: "uppercase",
+              color: C.textMuted,
+              fontWeight: 700,
+            }}
+          >
+            {c.label}
+          </div>
+          <div
+            style={{
+              fontSize: 24,
+              fontWeight: 700,
+              marginTop: 4,
+              color: c.fg ?? C.ink,
+              fontFamily: MONO,
+              letterSpacing: -0.5,
+            }}
+          >
+            {c.value}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Insights: throughput + top talkers ────────────────────────────────────────
+function InsightsPanel({
+  throughput,
+  throughputByOutcome,
+  platformBreakdown,
+  handleTimeTrend,
+  agentHandleTime,
+  queueWaitTrend,
+  queueWaitBreakdown,
+  worstMosCalls,
+  ivrTimeTrend,
+  ivrTimeByIvr,
+  talkersInternal,
+  talkersExternal,
+  talkersTab,
+  onTalkersTabChange,
+  onSelectTalker,
+  onSelectQueue,
+  onSelectIvr,
+  onOpenCall,
+}: {
+  throughput: ThroughputPoint[];
+  throughputByOutcome: ThroughputOutcomePoint[];
+  platformBreakdown: PlatformBreakdownPoint[];
+  handleTimeTrend: HandleTimeTrendPoint[];
+  agentHandleTime: AgentHandleTime[];
+  queueWaitTrend: QueueWaitTrendPoint[];
+  queueWaitBreakdown: QueueWaitBreakdown[];
+  worstMosCalls: WorstMosCall[];
+  ivrTimeTrend: IvrTimeTrendPoint[];
+  ivrTimeByIvr: IvrBreakdown[];
+  talkersInternal: TopTalker[];
+  talkersExternal: TopTalker[];
+  talkersTab: "internal" | "external";
+  onTalkersTabChange: (tab: "internal" | "external") => void;
+  onSelectTalker: (identity: string) => void;
+  onSelectQueue: (queueId: string) => void;
+  onSelectIvr: (ivrId: string) => void;
+  onOpenCall: (callId: string) => void;
+}) {
+  const activeTalkers = talkersTab === "internal" ? talkersInternal : talkersExternal;
+  return (
+    <div style={{ display: "flex", gap: 12, margin: "16px 0 4px", flexWrap: "wrap" }}>
+      {throughput.length > 0 && (
+        <ThroughputCard
+          throughput={throughput}
+          throughputByOutcome={throughputByOutcome}
+          platformBreakdown={platformBreakdown}
+          handleTimeTrend={handleTimeTrend}
+          agentHandleTime={agentHandleTime}
+          queueWaitTrend={queueWaitTrend}
+          queueWaitBreakdown={queueWaitBreakdown}
+          worstMosCalls={worstMosCalls}
+          ivrTimeTrend={ivrTimeTrend}
+          ivrTimeByIvr={ivrTimeByIvr}
+          onSelectAgent={onSelectTalker}
+          onSelectQueue={onSelectQueue}
+          onSelectIvr={onSelectIvr}
+          onOpenCall={onOpenCall}
+        />
+      )}
+      {(talkersInternal.length > 0 || talkersExternal.length > 0) && (
+        <div
+          style={{
+            flex: "1 1 280px",
+            background: C.surface,
+            border: `1px solid ${C.border}`,
+            borderRadius: 12,
+            padding: "14px 16px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 8,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10.5,
+                letterSpacing: 0.5,
+                textTransform: "uppercase",
+                color: C.textMuted,
+                fontWeight: 700,
+              }}
+            >
+              Top talkers
+            </div>
+            <div
+              style={{
+                display: "flex",
+                gap: 2,
+                background: C.surfaceAlt,
+                borderRadius: 8,
+                padding: 2,
+              }}
+            >
+              {(["internal", "external"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => onTalkersTabChange(tab)}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: 6,
+                    border: "none",
+                    background: talkersTab === tab ? C.surface : "transparent",
+                    color: talkersTab === tab ? C.ink : C.textMuted,
+                    fontSize: 11.5,
+                    fontWeight: 650,
+                    cursor: "pointer",
+                    boxShadow: talkersTab === tab ? "0 1px 2px rgba(15,22,32,0.08)" : "none",
+                  }}
+                >
+                  {tab === "internal" ? "Internal" : "External"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {activeTalkers.length > 0 ? (
+            <TopTalkersTable talkers={activeTalkers} onSelect={onSelectTalker} />
+          ) : (
+            <div style={{ fontSize: 12.5, color: C.textMuted, padding: "10px 0" }}>
+              No {talkersTab} talkers in this window.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Single-series magnitude-over-time → sequential single hue (the app's accent),
+// no legend (the chart's own title names the one series). Bars: ≤24px thick,
+// 4px rounded data-end, 2px surface gap, hover tooltip per bar. Shared by
+// throughput, handle time, and queue wait — only title/value formatting differ.
+function TrendBarChart({
+  title,
+  data,
+  formatValue,
+  height = 120,
+}: {
+  title: string;
+  data: { bucketStart: string; value: number }[];
+  formatValue: (v: number) => string;
+  height?: number;
+}) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  if (data.length === 0) return null;
+
+  const max = Math.max(...data.map((d) => d.value), 1);
+  const isHourly =
+    data.length > 1 &&
+    new Date(data[1].bucketStart).getTime() - new Date(data[0].bucketStart).getTime() <
+      25 * 3_600_000;
+
+  const fmtBucket = (iso: string) =>
+    isHourly
+      ? new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+      : new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+
+  // Sparse x labels (first / middle / last) — never one per bar.
+  const labelIdxs = new Set<number>([0, data.length - 1]);
+  if (data.length > 2) labelIdxs.add(Math.floor((data.length - 1) / 2));
+
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          marginBottom: 8,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 10.5,
+            letterSpacing: 0.5,
+            textTransform: "uppercase",
+            color: C.textMuted,
+            fontWeight: 700,
+          }}
+        >
+          {title}
+        </span>
+        <span style={{ fontSize: 11, color: C.textMuted, fontFamily: MONO }}>
+          max {formatValue(max)} / {isHourly ? "hour" : "day"}
+        </span>
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          height,
+          gap: 2,
+          borderBottom: `1px solid ${C.border}`,
+        }}
+      >
+        {data.map((d, i) => {
+          const h = Math.max(2, Math.round((d.value / max) * (height - 6)));
+          const hovered = hoverIdx === i;
+          return (
+            <div
+              key={d.bucketStart}
+              onMouseEnter={() => setHoverIdx(i)}
+              onMouseLeave={() => setHoverIdx((v) => (v === i ? null : v))}
+              style={{
+                flex: 1,
+                display: "flex",
+                justifyContent: "center",
+                height: "100%",
+                alignItems: "flex-end",
+                position: "relative",
+              }}
+            >
+              <div
+                style={{
+                  width: "100%",
+                  maxWidth: 24,
+                  height: h,
+                  background: hovered ? C.accentDeep : C.accent,
+                  borderRadius: "4px 4px 0 0",
+                }}
+              />
+              {hovered && (
+                <div
+                  style={{
+                    position: "absolute",
+                    bottom: h + 8,
+                    left: "50%",
+                    transform: "translateX(-50%)",
+                    background: C.ink,
+                    color: "#fff",
+                    fontSize: 11.5,
+                    padding: "5px 9px",
+                    borderRadius: 6,
+                    whiteSpace: "nowrap",
+                    zIndex: 5,
+                    pointerEvents: "none",
+                  }}
+                >
+                  <strong style={{ fontFamily: MONO }}>{formatValue(d.value)}</strong>{" "}
+                  <span style={{ opacity: 0.85 }}>{fmtBucket(d.bucketStart)}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex" }}>
+        {data.map((d, i) => (
+          <div
+            key={d.bucketStart}
+            style={{
+              flex: 1,
+              textAlign: "center",
+              fontSize: 10.5,
+              color: C.textMuted,
+              fontFamily: MONO,
+              marginTop: 6,
+            }}
+          >
+            {labelIdxs.has(i) ? fmtBucket(d.bucketStart) : ""}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Two-category comparison (not single-series magnitude) → categorical color,
+// not sequential: accent (answered) + rose (unanswered), reusing rose's
+// existing meaning elsewhere in this app (missed/abandoned state pills), and
+// validated as a categorical pair (validate_palette.js, adjacent — the only
+// check that applies since a stack only ever has these two touching). Legend
+// is mandatory at 2+ series, shown inline in the header since there are only two.
+function ThroughputOutcomeChart({
+  data,
+  height = 120,
+}: {
+  data: { bucketStart: string; answered: number; unanswered: number }[];
+  height?: number;
+}) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  if (data.length === 0) return null;
+
+  const totals = data.map((d) => d.answered + d.unanswered);
+  const max = Math.max(...totals, 1);
+  const isHourly =
+    data.length > 1 &&
+    new Date(data[1].bucketStart).getTime() - new Date(data[0].bucketStart).getTime() <
+      25 * 3_600_000;
+
+  const fmtBucket = (iso: string) =>
+    isHourly
+      ? new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+      : new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+
+  const labelIdxs = new Set<number>([0, data.length - 1]);
+  if (data.length > 2) labelIdxs.add(Math.floor((data.length - 1) / 2));
+
+  const legendDot = (color: string, label: string) => (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      <span style={{ width: 7, height: 7, borderRadius: 2, background: color }} />
+      <span style={{ color: C.textMid }}>{label}</span>
+    </span>
+  );
+
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          marginBottom: 8,
+          flexWrap: "wrap",
+          gap: 8,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 10.5,
+            letterSpacing: 0.5,
+            textTransform: "uppercase",
+            color: C.textMuted,
+            fontWeight: 700,
+          }}
+        >
+          Calls throughput
+        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 11.5 }}>
+          {legendDot(C.accent, "Answered")}
+          {legendDot(C.rose, "Unanswered")}
+          <span style={{ color: C.textMuted, fontFamily: MONO }}>
+            max {max} / {isHourly ? "hour" : "day"}
+          </span>
+        </div>
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          height,
+          gap: 2,
+          borderBottom: `1px solid ${C.border}`,
+        }}
+      >
+        {data.map((d, i) => {
+          const hAnswered = Math.max(0, Math.round((d.answered / max) * (height - 6)));
+          const hUnanswered = Math.max(0, Math.round((d.unanswered / max) * (height - 6)));
+          const hovered = hoverIdx === i;
+          const total = d.answered + d.unanswered;
+          return (
+            <div
+              key={d.bucketStart}
+              onMouseEnter={() => setHoverIdx(i)}
+              onMouseLeave={() => setHoverIdx((v) => (v === i ? null : v))}
+              style={{
+                flex: 1,
+                display: "flex",
+                justifyContent: "center",
+                height: "100%",
+                alignItems: "flex-end",
+                position: "relative",
+                opacity: hoverIdx !== null && !hovered ? 0.55 : 1,
+              }}
+            >
+              <div style={{ width: "100%", maxWidth: 24, display: "flex", flexDirection: "column" }}>
+                {hUnanswered > 0 && (
+                  <div
+                    style={{
+                      height: hUnanswered,
+                      background: C.rose,
+                      borderRadius: hAnswered > 0 ? "4px 4px 0 0" : "4px 4px 0 0",
+                    }}
+                  />
+                )}
+                {hUnanswered > 0 && hAnswered > 0 && (
+                  <div style={{ height: 2, background: C.surface }} />
+                )}
+                {hAnswered > 0 && (
+                  <div
+                    style={{
+                      height: hAnswered,
+                      background: C.accent,
+                      borderRadius: hUnanswered > 0 ? "0 0 0 0" : "4px 4px 0 0",
+                    }}
+                  />
+                )}
+              </div>
+              {hovered && (
+                <div
+                  style={{
+                    position: "absolute",
+                    bottom: hAnswered + hUnanswered + 8,
+                    left: "50%",
+                    transform: "translateX(-50%)",
+                    background: C.ink,
+                    color: "#fff",
+                    fontSize: 11.5,
+                    padding: "6px 10px",
+                    borderRadius: 6,
+                    whiteSpace: "nowrap",
+                    zIndex: 5,
+                    pointerEvents: "none",
+                  }}
+                >
+                  <div>
+                    <strong style={{ fontFamily: MONO }}>{total}</strong>{" "}
+                    <span style={{ opacity: 0.85 }}>{fmtBucket(d.bucketStart)}</span>
+                  </div>
+                  <div style={{ opacity: 0.85, marginTop: 2 }}>
+                    {d.answered} answered · {d.unanswered} unanswered
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex" }}>
+        {data.map((d, i) => (
+          <div
+            key={d.bucketStart}
+            style={{
+              flex: 1,
+              textAlign: "center",
+              fontSize: 10.5,
+              color: C.textMuted,
+              fontFamily: MONO,
+              marginTop: 6,
+            }}
+          >
+            {labelIdxs.has(i) ? fmtBucket(d.bucketStart) : ""}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Fixed categorical order for real source platforms. Reuses the app's
+// accent/teal/amber/rose, but swaps violet for a magenta: violet fails CVD
+// separation against the accent blue once *any* two segments can be adjacent
+// (validated with validate_palette.js --pairs all) — true for a donut's
+// data-ordered arcs, unlike a fixed-sequence bar chart where only neighbors matter.
+const PLATFORM_COLORS = [C.accent, C.teal, C.amber, C.rose, "#A63A9E"];
+const PLATFORM_OTHER_COLOR = C.textMid; // folded tail, >5 distinct real platforms
+const PLATFORM_UNKNOWN_COLOR = C.textMuted; // records with no sourcePlatformId
+
+interface PieSlice {
+  key: string;
+  label: string;
+  count: number;
+  color: string;
+}
+
+function buildPlatformSlices(data: PlatformBreakdownPoint[]): PieSlice[] {
+  const real = data
+    .filter((d): d is { sourcePlatformId: string; count: number } => !!d.sourcePlatformId)
+    // Identity-stable order (alphabetical, not by count) so a given platform
+    // keeps its color across filter/window changes rather than repainting on rank.
+    .sort((a, b) => a.sourcePlatformId.localeCompare(b.sourcePlatformId));
+  const unknownCount = data
+    .filter((d) => !d.sourcePlatformId)
+    .reduce((s, d) => s + d.count, 0);
+
+  const slices: PieSlice[] = real.slice(0, PLATFORM_COLORS.length).map((p, i) => ({
+    key: p.sourcePlatformId,
+    label: p.sourcePlatformId,
+    count: p.count,
+    color: PLATFORM_COLORS[i],
+  }));
+
+  const overflow = real.slice(PLATFORM_COLORS.length);
+  if (overflow.length > 0) {
+    slices.push({
+      key: "__other",
+      label: `Other (${overflow.length})`,
+      count: overflow.reduce((s, p) => s + p.count, 0),
+      color: PLATFORM_OTHER_COLOR,
+    });
+  }
+
+  if (unknownCount > 0) {
+    slices.push({
+      key: "__unknown",
+      label: "Unknown platform",
+      count: unknownCount,
+      color: PLATFORM_UNKNOWN_COLOR,
+    });
+  }
+
+  // Visual (largest-first) draw order only — color already comes from the
+  // identity-stable assignment above, so re-sorting here never repaints a slice.
+  return slices.sort((a, b) => b.count - a.count);
+}
+
+// Part-to-whole, ≤6 segments, "at a glance" — the one case this design system's
+// anti-pattern guidance allows a pie (not for comparing close values; exact
+// figures ride the hover legend line, not the wedge angles).
+function PlatformPie({ data, size }: { data: PlatformBreakdownPoint[]; size: number }) {
+  const [hoverKey, setHoverKey] = useState<string | null>(null);
+  const slices = buildPlatformSlices(data);
+  const total = slices.reduce((s, d) => s + d.count, 0);
+  if (total === 0) return null;
+
+  // Fixed pixel size rather than a %-fill/flex chain — nested percentage
+  // heights inside nested flex containers proved unreliable in practice
+  // (ballooned the card far past the pie's own size). A literal width/height
+  // on the <svg> with a 100-unit viewBox is simple and always correct.
+  const r = 45;
+  const gapDeg = 1.5; // degrees reserved as a surface-color gap between wedges
+
+  let cursorDeg = 0;
+  const arcs = slices.map((s) => {
+    const rawDeg = (s.count / total) * 360;
+    const start = cursorDeg;
+    cursorDeg += rawDeg;
+    return { ...s, startAngle: start + gapDeg / 2, endAngle: cursorDeg - gapDeg / 2 };
+  });
+
+  const hovered = arcs.find((a) => a.key === hoverKey) ?? null;
+
+  const polar = (angleDeg: number) => {
+    const rad = ((angleDeg - 90) * Math.PI) / 180;
+    return { x: 50 + r * Math.cos(rad), y: 50 + r * Math.sin(rad) };
+  };
+  const wedgePath = (startAngle: number, endAngle: number) => {
+    const p1 = polar(startAngle);
+    const p2 = polar(endAngle);
+    const largeArc = endAngle - startAngle > 180 ? 1 : 0;
+    return `M 50 50 L ${p1.x} ${p1.y} A ${r} ${r} 0 ${largeArc} 1 ${p2.x} ${p2.y} Z`;
+  };
+
+  // No permanent legend — identity rides the hover interaction: a single line
+  // below the pie names the hovered wedge, appearing only on mouseover, with a
+  // fixed-height reserved slot so the chart doesn't jump when it shows/hides.
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+      <div
+        style={{
+          fontSize: 10.5,
+          letterSpacing: 0.5,
+          textTransform: "uppercase",
+          color: C.textMuted,
+          fontWeight: 700,
+          marginBottom: 12,
+          alignSelf: "flex-start",
+        }}
+      >
+        Calls by source platform
+      </div>
+      <svg width={size} height={size} viewBox="0 0 100 100" style={{ display: "block" }}>
+        {arcs.map((a) => (
+          <path
+            key={a.key}
+            d={wedgePath(a.startAngle, a.endAngle)}
+            fill={a.color}
+            opacity={hoverKey && hoverKey !== a.key ? 0.45 : 1}
+            onMouseEnter={() => setHoverKey(a.key)}
+            onMouseLeave={() => setHoverKey((k) => (k === a.key ? null : k))}
+            style={{ transition: "opacity 0.12s" }}
+          />
+        ))}
+      </svg>
+      <div
+        style={{
+          height: 22,
+          marginTop: 8,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 7,
+          fontSize: 12.5,
+        }}
+      >
+        {hovered ? (
+          <>
+            <span
+              style={{ width: 9, height: 9, borderRadius: 2, background: hovered.color, flexShrink: 0 }}
+            />
+            <span
+              style={{
+                fontWeight: 650,
+                color: C.ink,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {hovered.label}
+            </span>
+            <span style={{ color: C.textMuted, fontFamily: MONO, flexShrink: 0 }}>
+              {hovered.count} · {Math.round((hovered.count / total) * 100)}%
+            </span>
+          </>
+        ) : (
+          <span style={{ color: C.textMuted, fontFamily: MONO }}>{total} calls — hover a slice</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Ranked table (not a chart — a handful of ranked classes reads better as a
+// table). Call count carries a direct-labeled magnitude wash in the accent hue
+// so relative scale reads at a glance without a second chart.
+function TopTalkersTable({
+  talkers,
+  onSelect,
+}: {
+  talkers: TopTalker[];
+  onSelect: (identity: string) => void;
+}) {
+  const max = Math.max(...talkers.map((t) => t.callCount), 1);
+  const head: React.CSSProperties = {
+    fontSize: 10.5,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: C.textMuted,
+    fontWeight: 700,
+    textAlign: "left",
+    padding: "0 0 8px",
+  };
+  const cell: React.CSSProperties = {
+    padding: "7px 0",
+    fontSize: 13,
+    borderTop: `1px solid ${C.border}`,
+  };
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+      <thead>
+        <tr>
+          <th style={head}>Talker</th>
+          <th style={{ ...head, textAlign: "right" }}>Calls</th>
+          <th style={{ ...head, textAlign: "right" }}>Talk time</th>
+        </tr>
+      </thead>
+      <tbody>
+        {talkers.map((t) => (
+          <tr
+            key={t.identity}
+            onClick={() => onSelect(t.identity)}
+            title={`Show ${t.displayName ?? t.identity}'s calls`}
+            style={{ cursor: "pointer" }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = C.surfaceAlt;
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "transparent";
+            }}
+          >
+            <td style={cell}>
+              <div style={{ fontWeight: 600 }}>{t.displayName ?? t.identity}</div>
+              {t.displayName && (
+                <div style={{ fontSize: 11, color: C.textMuted, fontFamily: MONO }}>
+                  {t.identity}
+                </div>
+              )}
+            </td>
+            <td style={{ ...cell, textAlign: "right", position: "relative" }}>
+              <div
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  height: 18,
+                  width: `${Math.max(10, (t.callCount / max) * 100)}%`,
+                  background: C.accentSoft,
+                  borderRadius: 4,
+                }}
+              />
+              <span
+                style={{
+                  position: "relative",
+                  fontFamily: MONO,
+                  fontWeight: 650,
+                  paddingRight: 6,
+                }}
+              >
+                {t.callCount}
+              </span>
+            </td>
+            <td style={{ ...cell, textAlign: "right", fontFamily: MONO, color: C.textMid }}>
+              {fmtDur(t.totalDurationSeconds)}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+// Ranked table shared by Agent handle time and Queue wait time — same shape as
+// TopTalkersTable but the magnitude wash rides the avg-time column, since that's
+// what these two are ranked by (longest first), not call count.
+function RankedTimeTable({
+  nameHeader,
+  rows,
+  onSelect,
+}: {
+  nameHeader: string;
+  rows: { key: string; label: string; sublabel?: string; count: number; avgSeconds: number }[];
+  onSelect?: (key: string) => void;
+}) {
+  if (rows.length === 0) return null;
+  const max = Math.max(...rows.map((r) => r.avgSeconds), 1);
+  const head: React.CSSProperties = {
+    fontSize: 10.5,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: C.textMuted,
+    fontWeight: 700,
+    textAlign: "left",
+    padding: "0 0 8px",
+  };
+  const cell: React.CSSProperties = {
+    padding: "7px 0",
+    fontSize: 13,
+    borderTop: `1px solid ${C.border}`,
+  };
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+      <thead>
+        <tr>
+          <th style={head}>{nameHeader}</th>
+          <th style={{ ...head, textAlign: "right" }}>Calls</th>
+          <th style={{ ...head, textAlign: "right" }}>Avg time</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr
+            key={r.key}
+            onClick={onSelect ? () => onSelect(r.key) : undefined}
+            title={onSelect ? `Show ${r.label}'s calls` : undefined}
+            style={onSelect ? { cursor: "pointer" } : undefined}
+            onMouseEnter={
+              onSelect
+                ? (e) => {
+                    e.currentTarget.style.background = C.surfaceAlt;
+                  }
+                : undefined
+            }
+            onMouseLeave={
+              onSelect
+                ? (e) => {
+                    e.currentTarget.style.background = "transparent";
+                  }
+                : undefined
+            }
+          >
+            <td style={cell}>
+              <div style={{ fontWeight: 600 }}>{r.label}</div>
+              {r.sublabel && (
+                <div style={{ fontSize: 11, color: C.textMuted, fontFamily: MONO }}>
+                  {r.sublabel}
+                </div>
+              )}
+            </td>
+            <td style={{ ...cell, textAlign: "right", fontFamily: MONO, color: C.textMid }}>
+              {r.count}
+            </td>
+            <td style={{ ...cell, textAlign: "right", position: "relative" }}>
+              <div
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  height: 18,
+                  width: `${Math.max(10, (r.avgSeconds / max) * 100)}%`,
+                  background: C.accentSoft,
+                  borderRadius: 4,
+                }}
+              />
+              <span
+                style={{
+                  position: "relative",
+                  fontFamily: MONO,
+                  fontWeight: 650,
+                  paddingRight: 6,
+                }}
+              >
+                {fmtDur(r.avgSeconds)}
+              </span>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+// MOS (Mean Opinion Score) runs roughly 1–5 for voice quality; these bands
+// match ITU-T-ish convention (poor / fair / good) and reuse the app's existing
+// state colors (rose = bad, amber = warning, teal = good) rather than
+// introducing a new color meaning.
+function mosStyle(score: number): { fg: string; bg: string } {
+  if (score < 3) return { fg: C.rose, bg: C.roseSoft };
+  if (score < 4) return { fg: C.amber, bg: C.amberSoft };
+  return { fg: C.teal, bg: C.tealSoft };
+}
+
+// Ranked table for the Worst MOS tab — each row is one specific call (unlike
+// RankedTimeTable's per-entity aggregates), so clicking opens that call's own
+// detail drawer directly instead of filtering the records table.
+function WorstMosTable({
+  calls,
+  onSelect,
+}: {
+  calls: WorstMosCall[];
+  onSelect: (callId: string) => void;
+}) {
+  if (calls.length === 0) return null;
+  const head: React.CSSProperties = {
+    fontSize: 10.5,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: C.textMuted,
+    fontWeight: 700,
+    textAlign: "left",
+    padding: "0 0 8px",
+  };
+  const cell: React.CSSProperties = {
+    padding: "7px 0",
+    fontSize: 13,
+    borderTop: `1px solid ${C.border}`,
+  };
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+      <thead>
+        <tr>
+          <th style={head}>Call</th>
+          <th style={{ ...head, textAlign: "right" }}>MOS</th>
+          <th style={{ ...head, textAlign: "right" }}>Duration</th>
+        </tr>
+      </thead>
+      <tbody>
+        {calls.map((c) => {
+          const st = mosStyle(c.mosScore);
+          return (
+            <tr
+              key={c.callId}
+              onClick={() => onSelect(c.callId)}
+              title={`Open ${c.callId}`}
+              style={{ cursor: "pointer" }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = C.surfaceAlt;
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+              }}
+            >
+              <td style={cell}>
+                <div style={{ fontWeight: 600, fontFamily: MONO, fontSize: 12.5 }}>
+                  {c.callId}
+                </div>
+                <div style={{ fontSize: 11, color: C.textMuted }}>{fmt(c.startTime)}</div>
+              </td>
+              <td style={{ ...cell, textAlign: "right" }}>
+                <Pill fg={st.fg} bg={st.bg}>
+                  {c.mosScore.toFixed(1)}
+                </Pill>
+              </td>
+              <td style={{ ...cell, textAlign: "right", fontFamily: MONO, color: C.textMid }}>
+                {c.durationSeconds != null ? fmtDur(c.durationSeconds) : "—"}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+// Full-screen overlay for a larger chart view — same treatment as the record
+// detail drawer and ingest modal (the app's two existing overlay patterns).
+// Export-to-PDF rides the browser's own print pipeline (every browser already
+// offers "Save as PDF" as a print destination) rather than a client-side PDF
+// library — zero new dependencies, consistent with how this app hand-rolls
+// everything else. The print stylesheet hides the rest of the page and lets
+// only #chart-print-area through, so the saved PDF is just the chart.
+function ExpandModal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,22,32,0.4)",
+        zIndex: 60,
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+      }}
+    >
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #chart-print-area, #chart-print-area * { visibility: visible; }
+          #chart-print-area {
+            position: absolute; left: 0; top: 0; width: 100%;
+            box-shadow: none !important; max-height: none !important; overflow: visible !important;
+          }
+          #chart-print-hide { display: none !important; }
+          .print-title { display: block !important; }
+        }
+      `}</style>
+      <div
+        id="chart-print-area"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(900px, 95vw)",
+          maxHeight: "85vh",
+          overflowY: "auto",
+          background: C.surface,
+          borderRadius: 14,
+          boxShadow: "0 24px 60px rgba(15,22,32,0.3)",
+        }}
+      >
+        <div
+          id="chart-print-hide"
+          style={{
+            padding: "16px 20px",
+            borderBottom: `1px solid ${C.border}`,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            position: "sticky",
+            top: 0,
+            background: C.surface,
+            zIndex: 1,
+          }}
+        >
+          <div style={{ fontWeight: 700, fontSize: 15 }}>{title}</div>
+          <button
+            onClick={() => window.print()}
+            style={{
+              marginLeft: "auto",
+              padding: "6px 12px",
+              borderRadius: 7,
+              border: `1px solid ${C.border}`,
+              background: C.surface,
+              color: C.textMid,
+              fontSize: 12.5,
+              fontWeight: 650,
+              cursor: "pointer",
+            }}
+          >
+            ⬇ Export PDF
+          </button>
+          <button
+            onClick={onClose}
+            style={{
+              border: "none",
+              background: "transparent",
+              fontSize: 22,
+              cursor: "pointer",
+              color: C.textMuted,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <div style={{ padding: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12, display: "none" }} className="print-title">
+            {title}
+          </div>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type MetricTab =
+  | "throughput"
+  | "platform"
+  | "handleTime"
+  | "queueWait"
+  | "worstMos"
+  | "ivrTime";
+
+const METRIC_TABS: { id: MetricTab; label: string }[] = [
+  { id: "throughput", label: "Calls throughput" },
+  { id: "platform", label: "Calls by source platform" },
+  { id: "handleTime", label: "Agent handle time" },
+  { id: "queueWait", label: "Queue wait time" },
+  { id: "worstMos", label: "Worst call quality" },
+  { id: "ivrTime", label: "IVR time" },
+];
+
+// Tabbed card: Calls throughput / Calls by source platform / Agent handle time /
+// Queue wait time, all sharing one card footprint so the Insights row doesn't
+// grow with every new metric, plus an Expand button per tab for a larger
+// popover view — same TrendBarChart/PlatformPie components, just given more room.
+function ThroughputCard({
+  throughput,
+  throughputByOutcome,
+  platformBreakdown,
+  handleTimeTrend,
+  agentHandleTime,
+  queueWaitTrend,
+  queueWaitBreakdown,
+  worstMosCalls,
+  ivrTimeTrend,
+  ivrTimeByIvr,
+  onSelectAgent,
+  onSelectQueue,
+  onSelectIvr,
+  onOpenCall,
+}: {
+  throughput: ThroughputPoint[];
+  throughputByOutcome: ThroughputOutcomePoint[];
+  platformBreakdown: PlatformBreakdownPoint[];
+  handleTimeTrend: HandleTimeTrendPoint[];
+  agentHandleTime: AgentHandleTime[];
+  queueWaitTrend: QueueWaitTrendPoint[];
+  queueWaitBreakdown: QueueWaitBreakdown[];
+  worstMosCalls: WorstMosCall[];
+  ivrTimeTrend: IvrTimeTrendPoint[];
+  ivrTimeByIvr: IvrBreakdown[];
+  onSelectAgent: (identity: string) => void;
+  onSelectQueue: (queueId: string) => void;
+  onSelectIvr: (ivrId: string) => void;
+  onOpenCall: (callId: string) => void;
+}) {
+  const [tab, setTab] = useState<MetricTab>("throughput");
+  const [expanded, setExpanded] = useState(false);
+  const activeLabel = METRIC_TABS.find((t) => t.id === tab)!.label;
+
+  function renderContent(big: boolean) {
+    // Throughput and platform stand alone in their tab (no breakdown table below
+    // them, unlike handle time / queue wait), so they get a taller chart/donut —
+    // fills the space that would otherwise sit empty, and keeps all four tabs
+    // roughly the same total height so switching tabs doesn't jump the page.
+    const soloChartHeight = big ? 460 : 340;
+    const pairedChartHeight = big ? 300 : 120;
+    const pieSize = big ? 340 : 250; // fixed px — nested %-height flex chains proved unreliable
+
+    if (tab === "throughput") {
+      return <ThroughputOutcomeChart data={throughputByOutcome} height={soloChartHeight} />;
+    }
+
+    if (tab === "platform") {
+      if (platformBreakdown.length === 0) {
+        return (
+          <div style={{ fontSize: 12.5, color: C.textMuted, padding: "10px 0" }}>
+            No source platform data in this window.
+          </div>
+        );
+      }
+      return (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            minHeight: soloChartHeight,
+          }}
+        >
+          <PlatformPie data={platformBreakdown} size={pieSize} />
+        </div>
+      );
+    }
+
+    if (tab === "handleTime") {
+      return (
+        <>
+          <TrendBarChart
+            title="Agent handle time"
+            data={handleTimeTrend.map((d) => ({ bucketStart: d.bucketStart, value: d.avgSeconds }))}
+            formatValue={fmtDur}
+            height={pairedChartHeight}
+          />
+          <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
+            <RankedTimeTable
+              nameHeader="Agent"
+              rows={agentHandleTime.map((a) => ({
+                key: a.identity,
+                label: a.displayName ?? a.identity,
+                sublabel: a.displayName ? a.identity : undefined,
+                count: a.callCount,
+                avgSeconds: a.avgDurationSeconds,
+              }))}
+              onSelect={onSelectAgent}
+            />
+          </div>
+        </>
+      );
+    }
+
+    if (tab === "queueWait") {
+      return (
+        <>
+          <TrendBarChart
+            title="Queue wait time"
+            data={queueWaitTrend.map((d) => ({ bucketStart: d.bucketStart, value: d.avgSeconds }))}
+            formatValue={fmtDur}
+            height={pairedChartHeight}
+          />
+          <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
+            <RankedTimeTable
+              nameHeader="Queue"
+              rows={queueWaitBreakdown.map((q) => ({
+                key: q.queueId,
+                label: q.queueId,
+                count: q.callCount,
+                avgSeconds: q.avgWaitSeconds,
+              }))}
+              onSelect={onSelectQueue}
+            />
+          </div>
+        </>
+      );
+    }
+
+    if (tab === "worstMos") {
+      if (worstMosCalls.length === 0) {
+        return (
+          <div style={{ fontSize: 12.5, color: C.textMuted, padding: "10px 0" }}>
+            No voice quality (MOS) data in this window.
+          </div>
+        );
+      }
+      return <WorstMosTable calls={worstMosCalls} onSelect={onOpenCall} />;
+    }
+
+    return (
+      <>
+        <TrendBarChart
+          title="IVR time"
+          data={ivrTimeTrend.map((d) => ({ bucketStart: d.bucketStart, value: d.avgSeconds }))}
+          formatValue={fmtDur}
+          height={pairedChartHeight}
+        />
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
+          <RankedTimeTable
+            nameHeader="IVR"
+            rows={ivrTimeByIvr.map((i) => ({
+              key: i.ivrId,
+              label: i.ivrId,
+              count: i.callCount,
+              avgSeconds: i.avgTimeSeconds,
+            }))}
+            onSelect={onSelectIvr}
+          />
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        flex: "2 1 360px",
+        background: C.surface,
+        border: `1px solid ${C.border}`,
+        borderRadius: 12,
+        padding: "14px 16px",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          flexWrap: "wrap",
+          marginBottom: 4,
+        }}
+      >
+        <div style={{ display: "flex", gap: 2, background: C.surfaceAlt, borderRadius: 8, padding: 2 }}>
+          {METRIC_TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              style={{
+                padding: "5px 10px",
+                borderRadius: 6,
+                border: "none",
+                background: tab === t.id ? C.surface : "transparent",
+                color: tab === t.id ? C.ink : C.textMuted,
+                fontSize: 11.5,
+                fontWeight: 650,
+                cursor: "pointer",
+                boxShadow: tab === t.id ? "0 1px 2px rgba(15,22,32,0.08)" : "none",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => setExpanded(true)}
+          title="Expand"
+          aria-label="Expand"
+          style={{
+            border: `1px solid ${C.border}`,
+            background: C.surface,
+            color: C.textMid,
+            borderRadius: 8,
+            width: 30,
+            height: 30,
+            cursor: "pointer",
+            fontSize: 14,
+            flexShrink: 0,
+          }}
+        >
+          ⤢
+        </button>
+      </div>
+      {renderContent(false)}
+      {expanded && (
+        <ExpandModal title={activeLabel} onClose={() => setExpanded(false)}>
+          {renderContent(true)}
+        </ExpandModal>
+      )}
+    </div>
+  );
+}
+
+// ─── Export menu ──────────────────────────────────────────────────────────────
+// Exports every record matching the current filters (all pages), not just the
+// page currently visible in the table.
+function ExportMenu({
+  busy,
+  onExport,
+}: {
+  busy: boolean;
+  onExport: (format: "csv" | "json") => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const itemStyle: React.CSSProperties = {
+    display: "block",
+    width: "100%",
+    textAlign: "left",
+    padding: "9px 12px",
+    border: "none",
+    background: "transparent",
+    color: C.ink,
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: "pointer",
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={busy}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 7,
+          padding: "8px 14px",
+          borderRadius: 8,
+          border: `1px solid ${C.border}`,
+          background: C.surface,
+          color: busy ? C.textMuted : C.ink,
+          fontSize: 13,
+          fontWeight: 650,
+          cursor: busy ? "default" : "pointer",
+        }}
+      >
+        {busy ? "Exporting…" : "⬇ Export"}
+      </button>
+
+      {open && !busy && (
+        <>
+          <div
+            onClick={() => setOpen(false)}
+            style={{ position: "fixed", inset: 0, zIndex: 29 }}
+          />
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(100% + 6px)",
+              right: 0,
+              zIndex: 30,
+              minWidth: 160,
+              background: C.surface,
+              border: `1px solid ${C.border}`,
+              borderRadius: 10,
+              boxShadow: "0 14px 34px rgba(15,22,32,0.16)",
+              padding: 4,
+              overflow: "hidden",
+            }}
+          >
+            <button
+              onClick={() => {
+                onExport("csv");
+                setOpen(false);
+              }}
+              style={itemStyle}
+            >
+              Export as CSV
+            </button>
+            <button
+              onClick={() => {
+                onExport("json");
+                setOpen(false);
+              }}
+              style={itemStyle}
+            >
+              Export as JSON
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Records table ────────────────────────────────────────────────────────────
+const TABLE_COLUMNS: { id: string; label: string; width: number; minWidth: number }[] = [
+  { id: "callId", label: "Call ID", width: 190, minWidth: 100 },
+  { id: "platform", label: "Platform", width: 130, minWidth: 80 },
+  { id: "dir", label: "Dir", width: 56, minWidth: 40 },
+  { id: "type", label: "Type", width: 130, minWidth: 70 },
+  { id: "media", label: "Media", width: 130, minWidth: 70 },
+  { id: "state", label: "State", width: 100, minWidth: 70 },
+  { id: "start", label: "Start", width: 150, minWidth: 100 },
+  { id: "duration", label: "Duration", width: 90, minWidth: 60 },
+  { id: "parties", label: "Parties", width: 80, minWidth: 50 },
+  { id: "rec", label: "Rec", width: 56, minWidth: 40 },
+];
+
+const COLUMN_WIDTHS_KEY = "opencdr.recordsTable.columnWidths";
+
+function defaultColumnWidths(): Record<string, number> {
+  const w: Record<string, number> = {};
+  for (const c of TABLE_COLUMNS) w[c.id] = c.width;
+  return w;
+}
+
+function loadColumnWidths(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(COLUMN_WIDTHS_KEY);
+    const stored = raw ? JSON.parse(raw) : {};
+    return { ...defaultColumnWidths(), ...stored };
+  } catch {
+    return defaultColumnWidths();
+  }
+}
+
+function RecordsTable({
+  records,
+  loading,
+  onSelect,
+  selectedId,
+}: {
+  records: CallRecord[];
+  loading: boolean;
+  onSelect: (r: CallRecord) => void;
+  selectedId?: string;
+}) {
+  const [widths, setWidths] = useState<Record<string, number>>(loadColumnWidths);
+  const dragRef = React.useRef<{ id: string; startX: number; startWidth: number } | null>(
+    null
+  );
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(widths));
+    } catch {
+      // localStorage unavailable (private mode, etc.) — resizing still works, just not persisted.
+    }
+  }, [widths]);
+
+  const onResizeMove = (e: MouseEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const col = TABLE_COLUMNS.find((c) => c.id === d.id);
+    const min = col?.minWidth ?? 40;
+    const next = Math.max(min, d.startWidth + (e.clientX - d.startX));
+    setWidths((w) => ({ ...w, [d.id]: next }));
+  };
+
+  const onResizeEnd = () => {
+    dragRef.current = null;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    window.removeEventListener("mousemove", onResizeMove);
+    window.removeEventListener("mouseup", onResizeEnd);
+  };
+
+  const onResizeStart = (colId: string) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragRef.current = { id: colId, startX: e.clientX, startWidth: widths[colId] };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onResizeMove);
+    window.addEventListener("mouseup", onResizeEnd);
+  };
+
+  const resetWidths = () => setWidths(defaultColumnWidths());
+
+  const head: React.CSSProperties = {
+    fontSize: 10.5,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: C.textMuted,
+    fontWeight: 700,
+    textAlign: "left",
+    padding: "10px 12px",
+    borderBottom: `1px solid ${C.border}`,
+    position: "sticky",
+    top: 0,
+    background: C.surfaceAlt,
+    overflow: "hidden",
+    whiteSpace: "nowrap",
+    textOverflow: "ellipsis",
+  };
+  const cell: React.CSSProperties = {
+    padding: "11px 12px",
+    fontSize: 13,
+    borderBottom: `1px solid ${C.border}`,
+    verticalAlign: "middle",
+    overflow: "hidden",
+    whiteSpace: "nowrap",
+    textOverflow: "ellipsis",
+  };
+
+  return (
+    <div
+      style={{
+        marginTop: 16,
+        background: C.surface,
+        border: `1px solid ${C.border}`,
+        borderRadius: 12,
+        overflow: "hidden",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "flex-end", padding: "6px 10px 0" }}>
+        <button
+          onClick={resetWidths}
+          style={{
+            border: "none",
+            background: "transparent",
+            color: C.textMuted,
+            fontSize: 11,
+            cursor: "pointer",
+            padding: "2px 4px",
+          }}
+        >
+          ↺ Reset columns
+        </button>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", tableLayout: "fixed", width: "max-content" }}>
+          <colgroup>
+            {TABLE_COLUMNS.map((c) => (
+              <col key={c.id} style={{ width: widths[c.id] }} />
+            ))}
+          </colgroup>
+          <thead>
+            <tr>
+              {TABLE_COLUMNS.map((c) => (
+                <th key={c.id} style={{ ...head, position: "relative" }}>
+                  {c.label}
+                  <span
+                    onMouseDown={onResizeStart(c.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    onMouseEnter={(e) => {
+                      const grip = e.currentTarget.firstElementChild as HTMLElement;
+                      grip.style.background = C.accent;
+                      grip.style.opacity = "1";
+                    }}
+                    onMouseLeave={(e) => {
+                      const grip = e.currentTarget.firstElementChild as HTMLElement;
+                      grip.style.background = C.borderStrong;
+                      grip.style.opacity = "0.7";
+                    }}
+                    style={{
+                      position: "absolute",
+                      right: -3,
+                      top: 0,
+                      height: "100%",
+                      width: 7,
+                      cursor: "col-resize",
+                      zIndex: 1,
+                      display: "flex",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 2,
+                        height: "55%",
+                        alignSelf: "center",
+                        borderRadius: 999,
+                        background: C.borderStrong,
+                        opacity: 0.7,
+                      }}
+                    />
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {loading && records.length === 0 && (
+              <tr>
+                <td style={{ ...cell, textAlign: "center", color: C.textMuted }} colSpan={10}>
+                  Loading…
+                </td>
+              </tr>
+            )}
+            {!loading && records.length === 0 && (
+              <tr>
+                <td style={{ ...cell, textAlign: "center", color: C.textMuted, padding: 28 }} colSpan={10}>
+                  No records in this window. Widen the time range, clear filters, or
+                  ingest some records.
+                </td>
+              </tr>
+            )}
+            {records.map((r) => {
+              const st = stateStyle(r.callState);
+              const rec = r.cloudRecording?.recordingStatus;
+              const isSel = r.callId === selectedId;
+              return (
+                <tr
+                  key={r.callId}
+                  onClick={() => onSelect(r)}
+                  style={{
+                    cursor: "pointer",
+                    background: isSel ? C.accentSoft : "transparent",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isSel) e.currentTarget.style.background = C.surfaceAlt;
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isSel) e.currentTarget.style.background = "transparent";
+                  }}
+                >
+                  <td style={{ ...cell, fontFamily: MONO, color: C.accentDeep }} title={r.callId}>
+                    {r.callId}
+                  </td>
+                  <td style={{ ...cell, fontFamily: MONO, fontSize: 12, color: C.textMid }}>
+                    {r.sourcePlatformId ? (
+                      <span title={r.sourcePlatformType ?? undefined}>
+                        {r.sourcePlatformId}
+                      </span>
+                    ) : (
+                      <span style={{ color: C.textMuted }}>—</span>
+                    )}
+                  </td>
+                  <td style={{ ...cell, textAlign: "center" }} title={r.callDirection}>
+                    {directionGlyph[r.callDirection ?? "unknown"] ?? "·"}
+                  </td>
+                  <td style={{ ...cell, color: C.textMid, fontFamily: MONO, fontSize: 12 }}>
+                    {(r.callType ?? "—").replace(/_/g, " ")}
+                  </td>
+                  <td style={cell}>
+                    <span title={r.mediaType}>
+                      {mediaGlyph[r.mediaType] ?? "·"}{" "}
+                      <span style={{ color: C.textMid, fontSize: 12 }}>
+                        {r.mediaType.replace(/_/g, " ")}
+                      </span>
+                    </span>
+                  </td>
+                  <td style={cell}>
+                    <Pill fg={st.fg} bg={st.bg}>
+                      {st.label}
+                    </Pill>
+                  </td>
+                  <td style={{ ...cell, fontFamily: MONO, fontSize: 12, color: C.textMid }}>
+                    {fmt(r.callStartTime)}
+                  </td>
+                  <td style={{ ...cell, fontFamily: MONO }}>{fmtDur(r.durationSeconds)}</td>
+                  <td style={{ ...cell, textAlign: "center", fontFamily: MONO }}>
+                    {r.participants.length}
+                  </td>
+                  <td style={cell}>
+                    {rec === "recorded" ? (
+                      <span title="recorded" style={{ color: C.amber, fontSize: 15 }}>
+                        ●
+                      </span>
+                    ) : rec === "partial" ? (
+                      <span title="partial" style={{ color: C.amber, fontSize: 15 }}>
+                        ◐
+                      </span>
+                    ) : (
+                      <span title={rec ?? "unknown"} style={{ color: C.textMuted }}>
+                        ○
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 250];
+
+function Pager({
+  pagination,
+  pageSize,
+  onPageSizeChange,
+  onPrev,
+  onNext,
+}: {
+  pagination: Pagination;
+  pageSize: number;
+  onPageSizeChange: (n: number) => void;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const btn = (disabled: boolean): React.CSSProperties => ({
+    padding: "7px 14px",
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    background: C.surface,
+    fontSize: 13,
+    fontWeight: 600,
+    color: disabled ? C.textMuted : C.ink,
+    cursor: disabled ? "default" : "pointer",
+  });
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginTop: 14,
+        fontSize: 13,
+        color: C.textMid,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <span>
+          Page {pagination.page} of {pagination.totalPages} ·{" "}
+          {pagination.totalRecords} records
+        </span>
+        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ color: C.textMuted, fontSize: 12.5 }}>Rows per page</span>
+          <select
+            value={pageSize}
+            onChange={(e) => onPageSizeChange(Number(e.target.value))}
+            style={{
+              padding: "5px 8px",
+              borderRadius: 6,
+              border: `1px solid ${C.border}`,
+              background: C.surface,
+              fontSize: 12.5,
+              color: C.ink,
+              fontFamily: SANS,
+              outline: "none",
+              cursor: "pointer",
+            }}
+          >
+            {PAGE_SIZE_OPTIONS.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button style={btn(pagination.page <= 1)} disabled={pagination.page <= 1} onClick={onPrev}>
+          ← Prev
+        </button>
+        <button
+          style={btn(pagination.page >= pagination.totalPages)}
+          disabled={pagination.page >= pagination.totalPages}
+          onClick={onNext}
+        >
+          Next →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Detail drawer ────────────────────────────────────────────────────────────
+// A clickable call ID inside the detail drawer's "Related legs" section —
+// drills across to that leg's own record via onDrill.
+function CallLegLink({
+  callId,
+  onClick,
+  disabled,
+}: {
+  callId: string;
+  onClick: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={`Open ${callId}`}
+      style={{
+        border: "none",
+        background: "transparent",
+        padding: 0,
+        margin: 0,
+        color: C.accentDeep,
+        fontFamily: MONO,
+        fontSize: 13,
+        fontWeight: 600,
+        cursor: disabled ? "default" : "pointer",
+        textDecoration: "underline",
+        textDecorationColor: disabled ? "transparent" : `${C.accentDeep}55`,
+        opacity: disabled ? 0.6 : 1,
+      }}
+    >
+      {callId}
+    </button>
+  );
+}
+
+function DetailDrawer({
+  record,
+  onClose,
+  onBack,
+  onDrill,
+  drillLoading,
+  drillError,
+}: {
+  record: CallRecord;
+  onClose: () => void;
+  onBack?: () => void;
+  onDrill: (callId: string) => void;
+  drillLoading: boolean;
+  drillError: string | null;
+}) {
+  const st = stateStyle(record.callState);
+  const handleExport = (format: "csv" | "json") => {
+    if (format === "csv") {
+      downloadBlob(`cdr-${record.callId}.csv`, toCsv([record]), "text/csv;charset=utf-8");
+    } else {
+      downloadBlob(`cdr-${record.callId}.json`, JSON.stringify(record, null, 2), "application/json");
+    }
+  };
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,22,32,0.34)",
+        zIndex: 40,
+        display: "flex",
+        justifyContent: "flex-end",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(640px, 100%)",
+          height: "100%",
+          background: C.bg,
+          overflowY: "auto",
+          boxShadow: "-14px 0 40px rgba(15,22,32,0.18)",
+        }}
+      >
+        {/* Drawer header */}
+        <div
+          style={{
+            padding: "18px 22px",
+            background: C.surface,
+            borderBottom: `1px solid ${C.border}`,
+            position: "sticky",
+            top: 0,
+            zIndex: 2,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {onBack && (
+              <button
+                onClick={onBack}
+                title="Back to the previous call"
+                style={{
+                  border: `1px solid ${C.border}`,
+                  background: C.surfaceAlt,
+                  color: C.textMid,
+                  borderRadius: 7,
+                  padding: "4px 9px",
+                  fontSize: 12.5,
+                  fontWeight: 650,
+                  cursor: "pointer",
+                }}
+              >
+                ← Back
+              </button>
+            )}
+            <Pill fg={st.fg} bg={st.bg}>
+              {st.label}
+            </Pill>
+            <span style={{ fontSize: 13, color: C.textMid }}>
+              {directionGlyph[record.callDirection ?? "unknown"]}{" "}
+              {(record.callDirection ?? "unknown")} ·{" "}
+              {(record.callType ?? "call").replace(/_/g, " ")} ·{" "}
+              {record.mediaType.replace(/_/g, " ")}
+            </span>
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+              <ExportMenu busy={false} onExport={handleExport} />
+              <button
+                onClick={onClose}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  fontSize: 22,
+                  cursor: "pointer",
+                  color: C.textMuted,
+                  lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          <div style={{ fontFamily: MONO, fontSize: 13, color: C.accentDeep, marginTop: 8 }}>
+            {record.callId}
+          </div>
+          {record._scenario && (
+            <div style={{ fontSize: 12.5, color: C.textMuted, marginTop: 4 }}>
+              {record._scenario}
+            </div>
+          )}
+        </div>
+
+        <div style={{ padding: "18px 22px", display: "flex", flexDirection: "column", gap: 18 }}>
+          {(record.sourcePlatformType || record.sourcePlatformId) && (
+            <Section title="Source platform">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <Field label="Platform type">{record.sourcePlatformType}</Field>
+                <Field label="Platform ID">{record.sourcePlatformId}</Field>
+              </div>
+            </Section>
+          )}
+
+          <Section title="Timing">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <Field label="Start">{fmt(record.callStartTime)}</Field>
+              <Field label="End">{fmt(record.callEndTime)}</Field>
+              <Field label="Duration">{fmtDur(record.durationSeconds)}</Field>
+              <Field label="Last update">{fmt(record.lastUpdateTime)}</Field>
+            </div>
+          </Section>
+
+          {record.callSource && (
+            <Section title="Routing">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                {record.callSource.huntNumber && (
+                  <Field label="Hunt number">{record.callSource.huntNumber}</Field>
+                )}
+                {record.callSource.ivrInfo && (
+                  <Field label="IVR">{record.callSource.ivrInfo}</Field>
+                )}
+                {record.callSource.queueInfo && (
+                  <Field label="Queue / ACD">{record.callSource.queueInfo}</Field>
+                )}
+                {record.callSource.timeInIvrSeconds != null && (
+                  <Field label="Time in IVR">
+                    {fmtDur(record.callSource.timeInIvrSeconds)}
+                  </Field>
+                )}
+                {record.callSource.timeInQueueSeconds != null && (
+                  <Field label="Time in queue">
+                    {fmtDur(record.callSource.timeInQueueSeconds)}
+                  </Field>
+                )}
+              </div>
+            </Section>
+          )}
+
+          <Section title={`Participants · ${record.participants.length}`}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {record.participants.map((p) => (
+                <ParticipantCard key={p.participantId} p={p} />
+              ))}
+            </div>
+          </Section>
+
+          {record.events && record.events.length > 0 && (
+            <Section title={`Call trace · ${record.events.length} events`}>
+              <EventTrace events={record.events} />
+            </Section>
+          )}
+
+          {record.cloudRecording && (
+            <Section title="Recording">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <Field label="Status">{record.cloudRecording.recordingStatus}</Field>
+                <Field label="Method">{record.cloudRecording.recordingMethod}</Field>
+                <Field label="Recording ID">{record.cloudRecording.recordingId}</Field>
+                <Field label="Media file">{record.cloudRecording.mediaName}</Field>
+              </div>
+              {record.cloudRecording.downloadPath && (
+                <a
+                  href={record.cloudRecording.downloadPath}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    display: "inline-block",
+                    marginTop: 10,
+                    fontSize: 13,
+                    color: C.accentDeep,
+                    fontWeight: 600,
+                  }}
+                >
+                  Open recording ↗
+                </a>
+              )}
+            </Section>
+          )}
+
+          {record.qos && (
+            <Section title="Quality of service">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+                <Field label="MOS">{record.qos.mosScore}</Field>
+                <Field label="Latency">
+                  {record.qos.latencyMs != null ? `${record.qos.latencyMs} ms` : "—"}
+                </Field>
+                <Field label="Jitter">
+                  {record.qos.jitterMs != null ? `${record.qos.jitterMs} ms` : "—"}
+                </Field>
+                <Field label="Packet loss">
+                  {record.qos.packetLossPercent != null
+                    ? `${record.qos.packetLossPercent}%`
+                    : "—"}
+                </Field>
+                <Field label="Packets">{record.qos.packetsTotal}</Field>
+              </div>
+            </Section>
+          )}
+
+          {(record.parentCallId ||
+            (record.relatedCallIds && record.relatedCallIds.length > 0)) && (
+            <Section title="Related legs">
+              {record.parentCallId && (
+                <Field label="Parent call">
+                  <CallLegLink
+                    callId={record.parentCallId}
+                    onClick={() => onDrill(record.parentCallId!)}
+                    disabled={drillLoading}
+                  />
+                </Field>
+              )}
+              {record.relatedCallIds && record.relatedCallIds.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <Field label="Related calls">
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px" }}>
+                      {record.relatedCallIds.map((id) => (
+                        <CallLegLink
+                          key={id}
+                          callId={id}
+                          onClick={() => onDrill(id)}
+                          disabled={drillLoading}
+                        />
+                      ))}
+                    </div>
+                  </Field>
+                </div>
+              )}
+              {drillLoading && (
+                <div style={{ marginTop: 8, fontSize: 12, color: C.textMuted }}>Loading…</div>
+              )}
+              {drillError && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: "8px 10px",
+                    borderRadius: 6,
+                    background: C.roseSoft,
+                    color: C.rose,
+                    fontSize: 12.5,
+                  }}
+                >
+                  {drillError}
+                </div>
+              )}
+            </Section>
+          )}
+
+          {record.wrapUpInfo && (
+            <Section title="Wrap-up">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <Field label="Code">{record.wrapUpInfo.wrapUpCode}</Field>
+                <Field label="Duration">
+                  {fmtDur(record.wrapUpInfo.wrapUpDurationSeconds)}
+                </Field>
+                {record.wrapUpInfo.wrapUpNotes && (
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    <Field label="Notes">{record.wrapUpInfo.wrapUpNotes}</Field>
+                  </div>
+                )}
+              </div>
+            </Section>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section
+      style={{
+        background: C.surface,
+        border: `1px solid ${C.border}`,
+        borderRadius: 12,
+        padding: "14px 16px",
+      }}
+    >
+      <h3
+        style={{
+          margin: "0 0 12px",
+          fontSize: 12,
+          letterSpacing: 0.5,
+          textTransform: "uppercase",
+          color: C.textMid,
+          fontWeight: 750,
+        }}
+      >
+        {title}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+function ParticipantCard({ p }: { p: Participant }) {
+  return (
+    <div
+      style={{
+        border: `1px solid ${C.border}`,
+        borderRadius: 10,
+        padding: "10px 12px",
+        background: C.surfaceAlt,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <Pill fg={C.accentDeep} bg={C.accentSoft}>
+          {p.role.replace(/_/g, " ")}
+        </Pill>
+        <span
+          title="participantId — matches p1/p2/... references in the Call trace below"
+          style={{
+            fontFamily: MONO,
+            fontSize: 11,
+            color: C.textMuted,
+            background: C.surfaceDeep,
+            padding: "2px 6px",
+            borderRadius: 5,
+          }}
+        >
+          {p.participantId}
+        </span>
+        <span style={{ fontWeight: 650, fontSize: 14 }}>
+          {p.displayName ?? p.userId ?? p.extension}
+          {p.displayName && p.userId && (
+            <span style={{ fontWeight: 500, fontFamily: MONO, fontSize: 12.5, color: C.textMid }}>
+              {" "}
+              ({p.userId})
+            </span>
+          )}
+        </span>
+        <span style={{ fontFamily: MONO, fontSize: 12.5, color: C.textMid }}>
+          ext {p.extension}
+        </span>
+        {p.recordingConfig && (
+          <span
+            style={{
+              marginLeft: "auto",
+              fontSize: 11.5,
+              color: p.recordingConfig === "record" ? C.amber : C.textMuted,
+              fontWeight: 600,
+            }}
+          >
+            {p.recordingConfig === "record" ? "● recording" : p.recordingConfig.replace(/_/g, " ")}
+          </span>
+        )}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          gap: 14,
+          flexWrap: "wrap",
+          marginTop: 8,
+          fontSize: 12,
+          color: C.textMid,
+          fontFamily: MONO,
+        }}
+      >
+        {p.group && <span>group: {p.group}</span>}
+        {p.slotNumber && <span>slot: {p.slotNumber}</span>}
+        {p.handsetInfo && <span>handset: {p.handsetInfo}</span>}
+        {p.device?.audioCodec && <span>codec: {p.device.audioCodec}</span>}
+        {p.device?.ipAddress && <span>ip: {p.device.ipAddress}</span>}
+        {p.joinTime && <span>joined: {fmtTimeOnly(p.joinTime)}</span>}
+        {p.leaveTime && <span>left: {fmtTimeOnly(p.leaveTime)}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ─── Signature: the call-event trace timeline ─────────────────────────────────
+function EventTrace({ events }: { events: CallEvent[] }) {
+  const sorted = [...events].sort(
+    (a, b) => new Date(a.eventTime).getTime() - new Date(b.eventTime).getTime()
+  );
+  const t0 = new Date(sorted[0].eventTime).getTime();
+
+  return (
+    <div style={{ position: "relative", paddingLeft: 4 }}>
+      {sorted.map((ev, i) => {
+        const es = eventStyle(ev.eventType);
+        const offsetMs = new Date(ev.eventTime).getTime() - t0;
+        const rel =
+          offsetMs === 0
+            ? "+0s"
+            : offsetMs < 1000
+            ? `+${offsetMs}ms`
+            : `+${Math.round(offsetMs / 1000)}s`;
+        const last = i === sorted.length - 1;
+        return (
+          <div key={i} style={{ display: "flex", gap: 12, position: "relative" }}>
+            {/* rail + node */}
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 16 }}>
+              <span
+                style={{
+                  width: 12,
+                  height: 12,
+                  borderRadius: 999,
+                  background: es.color,
+                  boxShadow: `0 0 0 3px ${es.soft}`,
+                  zIndex: 1,
+                  marginTop: 3,
+                }}
+              />
+              {!last && (
+                <span
+                  style={{
+                    width: 2,
+                    flex: 1,
+                    minHeight: 26,
+                    background: C.border,
+                    marginTop: 2,
+                  }}
+                />
+              )}
+            </div>
+            {/* content */}
+            <div style={{ paddingBottom: last ? 0 : 16, flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+                <span style={{ fontWeight: 650, fontSize: 13.5, color: es.color, textTransform: "capitalize" }}>
+                  {es.label}
+                </span>
+                <span style={{ fontFamily: MONO, fontSize: 11.5, color: C.textMuted }}>
+                  {fmtTimeOnly(ev.eventTime)} · {rel}
+                </span>
+              </div>
+              {(ev.detail || ev.participantId || ev.targetParticipantId) && (
+                <div style={{ fontSize: 12.5, color: C.textMid, marginTop: 2 }}>
+                  {ev.detail}
+                  {ev.participantId && (
+                    <span style={{ fontFamily: MONO, color: C.textMuted }}>
+                      {ev.detail ? "  ·  " : ""}
+                      {ev.participantId}
+                      {ev.targetParticipantId ? ` → ${ev.targetParticipantId}` : ""}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Audit log modal ──────────────────────────────────────────────────────────
+// Unlike Users/API keys (small inline lists in the ⋯ dropdown), this browses
+// what can be thousands of rows, so it gets a real overlay with pagination —
+// same treatment as IngestModal/ExpandModal — reusing the generic Pager
+// component (already shaped around the shared Pagination type, not tied to
+// CallRecord) rather than building new pagination controls.
+function statusStyle(code: number): { fg: string; bg: string } {
+  if (code >= 500) return { fg: C.rose, bg: C.roseSoft };
+  if (code >= 400) return { fg: C.amber, bg: C.amberSoft };
+  if (code >= 200 && code < 300) return { fg: C.teal, bg: C.tealSoft };
+  return { fg: C.textMid, bg: C.surfaceDeep };
+}
+
+function actorLabel(e: AuditLogEntry): string {
+  switch (e.actorType) {
+    case "user":
+      return e.actorId ?? "user";
+    case "ingest_key":
+      return "ingest key";
+    case "admin_key":
+      return "admin key";
+    default:
+      return "anonymous";
+  }
+}
+
+interface AuditQuery {
+  page: number;
+  pageSize: number;
+  actorId: string;
+  method: string;
+  pathPrefix: string;
+  startTime: string;
+  endTime: string;
+}
+
+function AuditLogModal({ onClose }: { onClose: () => void }) {
+  const [entries, setEntries] = useState<AuditLogEntry[] | null>(null);
+  const [pagination, setPagination] = useState<Pagination | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [actorId, setActorId] = useState("");
+  const [method, setMethod] = useState("");
+  const [pathPrefix, setPathPrefix] = useState("");
+  const [startTime, setStartTime] = useState("");
+  const [endTime, setEndTime] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [exporting, setExporting] = useState(false);
+
+  // Every call site passes fully-resolved values rather than reading filter
+  // state from closure — setState is async, so e.g. clearFilters() calling
+  // this right after setActorId("") would otherwise still see the old value.
+  const runQuery = async (q: AuditQuery) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.auditLog.list({
+        actorId: q.actorId || undefined,
+        method: q.method || undefined,
+        pathPrefix: q.pathPrefix || undefined,
+        startTime: q.startTime ? localInputToIso(q.startTime) : undefined,
+        endTime: q.endTime ? localInputToIso(q.endTime) : undefined,
+        page: q.page,
+        pageSize: q.pageSize,
+      });
+      setEntries(res.data);
+      setPagination(res.pagination);
+      setPage(q.page);
+      setPageSize(q.pageSize);
+    } catch (e: any) {
+      setError(e.message ?? "Failed to load audit log");
+      setEntries([]);
+      setPagination(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    runQuery({ page: 1, pageSize, actorId, method, pathPrefix, startTime, endTime });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const applyFilters = () =>
+    runQuery({ page: 1, pageSize, actorId, method, pathPrefix, startTime, endTime });
+
+  const clearFilters = () => {
+    setActorId("");
+    setMethod("");
+    setPathPrefix("");
+    setStartTime("");
+    setEndTime("");
+    runQuery({ page: 1, pageSize, actorId: "", method: "", pathPrefix: "", startTime: "", endTime: "" });
+  };
+
+  // Exports every entry matching the current filters (all pages, not just the
+  // visible one) — same pattern as the records table's own export.
+  const fetchAllMatching = async (): Promise<AuditLogEntry[]> => {
+    const base = {
+      actorId: actorId || undefined,
+      method: method || undefined,
+      pathPrefix: pathPrefix || undefined,
+      startTime: startTime ? localInputToIso(startTime) : undefined,
+      endTime: endTime ? localInputToIso(endTime) : undefined,
+      pageSize: 500,
+    };
+    const first = await api.auditLog.list({ ...base, page: 1 });
+    const all = [...first.data];
+    for (let p = 2; p <= first.pagination.totalPages; p++) {
+      const res = await api.auditLog.list({ ...base, page: p });
+      all.push(...res.data);
+    }
+    return all;
+  };
+
+  const handleExport = async (format: "csv" | "json") => {
+    setExporting(true);
+    setError(null);
+    try {
+      const all = await fetchAllMatching();
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      if (format === "csv") {
+        downloadBlob(`audit-log-${stamp}.csv`, auditLogToCsv(all), "text/csv;charset=utf-8");
+      } else {
+        downloadBlob(`audit-log-${stamp}.json`, JSON.stringify(all, null, 2), "application/json");
+      }
+    } catch (e: any) {
+      setError(e.message ?? "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const inputStyle: React.CSSProperties = {
+    padding: "7px 9px",
+    borderRadius: 7,
+    border: `1px solid ${C.border}`,
+    background: C.surface,
+    fontSize: 12.5,
+    color: C.ink,
+    fontFamily: SANS,
+    outline: "none",
+  };
+  const labelStyle: React.CSSProperties = {
+    fontSize: 10.5,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: C.textMuted,
+    fontWeight: 700,
+    marginBottom: 4,
+    display: "block",
+  };
+  const head: React.CSSProperties = {
+    fontSize: 10.5,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: C.textMuted,
+    fontWeight: 700,
+    textAlign: "left",
+    padding: "0 10px 8px 0",
+  };
+  const cell: React.CSSProperties = {
+    padding: "8px 10px 8px 0",
+    fontSize: 12.5,
+    borderTop: `1px solid ${C.border}`,
+    verticalAlign: "top",
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,22,32,0.38)",
+        zIndex: 50,
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(960px, 100%)",
+          maxHeight: "min(760px, 100%)",
+          display: "flex",
+          flexDirection: "column",
+          background: C.surface,
+          borderRadius: 14,
+          overflow: "hidden",
+          boxShadow: "0 24px 60px rgba(15,22,32,0.3)",
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: `1px solid ${C.border}`,
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Audit log</div>
+            <div style={{ fontSize: 12.5, color: C.textMuted, marginTop: 2 }}>
+              Every query, ingest, and admin action — who (or what), when, and the result.
+            </div>
+          </div>
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+            <ExportMenu busy={exporting} onExport={handleExport} />
+            <button
+              onClick={onClose}
+              style={{
+                border: "none",
+                background: "transparent",
+                fontSize: 22,
+                cursor: "pointer",
+                color: C.textMuted,
+              }}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+
+        <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div>
+              <label style={labelStyle}>Actor</label>
+              <input
+                type="text"
+                placeholder="username"
+                value={actorId}
+                onChange={(e) => setActorId(e.target.value)}
+                style={{ ...inputStyle, width: 130 }}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Method</label>
+              <select
+                value={method}
+                onChange={(e) => setMethod(e.target.value)}
+                style={{ ...inputStyle, width: 100 }}
+              >
+                <option value="">All</option>
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="PATCH">PATCH</option>
+                <option value="DELETE">DELETE</option>
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>Path starts with</label>
+              <input
+                type="text"
+                placeholder="/api/cdr/v1/calls"
+                value={pathPrefix}
+                onChange={(e) => setPathPrefix(e.target.value)}
+                style={{ ...inputStyle, width: 180 }}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>From</label>
+              <input
+                type="datetime-local"
+                value={startTime}
+                onChange={(e) => setStartTime(e.target.value)}
+                style={inputStyle}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>To</label>
+              <input
+                type="datetime-local"
+                value={endTime}
+                onChange={(e) => setEndTime(e.target.value)}
+                style={inputStyle}
+              />
+            </div>
+            <button
+              onClick={applyFilters}
+              style={{
+                padding: "8px 14px",
+                borderRadius: 7,
+                border: "none",
+                background: C.ink,
+                color: "#fff",
+                fontSize: 12.5,
+                fontWeight: 650,
+                cursor: "pointer",
+              }}
+            >
+              Apply
+            </button>
+            <button
+              onClick={clearFilters}
+              style={{
+                padding: "8px 14px",
+                borderRadius: 7,
+                border: `1px solid ${C.border}`,
+                background: C.surface,
+                color: C.textMid,
+                fontSize: 12.5,
+                fontWeight: 650,
+                cursor: "pointer",
+              }}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+
+        <div style={{ padding: "14px 20px", overflowY: "auto", flex: 1 }}>
+          {error && (
+            <div
+              style={{
+                marginBottom: 12,
+                padding: "10px 12px",
+                borderRadius: 8,
+                background: C.roseSoft,
+                color: C.rose,
+                fontSize: 13,
+              }}
+            >
+              {error}
+            </div>
+          )}
+          {loading ? (
+            <div style={{ fontSize: 13, color: C.textMuted, padding: "20px 0" }}>Loading…</div>
+          ) : !entries || entries.length === 0 ? (
+            <div style={{ fontSize: 13, color: C.textMuted, padding: "20px 0" }}>
+              No matching audit entries.
+            </div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={head}>Time</th>
+                  <th style={head}>Actor</th>
+                  <th style={head}>Request</th>
+                  <th style={head}>Status</th>
+                  <th style={{ ...head, textAlign: "right" }}>Records</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.map((e) => {
+                  const st = statusStyle(e.statusCode);
+                  return (
+                    <tr key={e.id}>
+                      <td style={{ ...cell, fontFamily: MONO, color: C.textMid, whiteSpace: "nowrap" }}>
+                        {fmt(e.occurredAt)}
+                      </td>
+                      <td style={cell}>
+                        <span
+                          style={{
+                            fontWeight: 600,
+                            color: e.actorType === "anonymous" ? C.rose : C.ink,
+                          }}
+                        >
+                          {actorLabel(e)}
+                        </span>
+                        {e.params?.username != null && e.actorType === "anonymous" && (
+                          <div style={{ fontSize: 11, color: C.textMuted, fontFamily: MONO }}>
+                            tried: {String(e.params.username)}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ ...cell, fontFamily: MONO }}>
+                        <span style={{ color: C.accentDeep, fontWeight: 650 }}>{e.method}</span>{" "}
+                        {e.path}
+                      </td>
+                      <td style={cell}>
+                        <Pill fg={st.fg} bg={st.bg}>
+                          {e.statusCode}
+                        </Pill>
+                      </td>
+                      <td style={{ ...cell, textAlign: "right", fontFamily: MONO, color: C.textMid }}>
+                        {e.recordCount ?? "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+
+          {pagination && pagination.totalRecords > 0 && (
+            <Pager
+              pagination={pagination}
+              pageSize={pageSize}
+              onPageSizeChange={(n) =>
+                runQuery({ page: 1, pageSize: n, actorId, method, pathPrefix, startTime, endTime })
+              }
+              onPrev={() =>
+                runQuery({
+                  page: Math.max(1, page - 1),
+                  pageSize,
+                  actorId,
+                  method,
+                  pathPrefix,
+                  startTime,
+                  endTime,
+                })
+              }
+              onNext={() =>
+                runQuery({
+                  page: Math.min(pagination.totalPages, page + 1),
+                  pageSize,
+                  actorId,
+                  method,
+                  pathPrefix,
+                  startTime,
+                  endTime,
+                })
+              }
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Ingest modal ─────────────────────────────────────────────────────────────
+function IngestModal({
+  onClose,
+  onDone,
+}: {
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [text, setText] = useState(SAMPLE_INGEST);
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const submit = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const parsed = JSON.parse(text);
+      const res = await api.ingest(parsed, apiKey || undefined);
+      setMsg({
+        ok: true,
+        text: `Accepted ${res.accepted} · created ${res.created} · updated ${res.updated}`,
+      });
+      setTimeout(onDone, 900);
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Failed to ingest" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,22,32,0.38)",
+        zIndex: 50,
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(680px, 100%)",
+          background: C.surface,
+          borderRadius: 14,
+          overflow: "hidden",
+          boxShadow: "0 24px 60px rgba(15,22,32,0.3)",
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: `1px solid ${C.border}`,
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Ingest call records</div>
+            <div style={{ fontSize: 12.5, color: C.textMuted, marginTop: 2 }}>
+              POST a single record or an array — validated against the standard,
+              upserted by callId.
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              marginLeft: "auto",
+              border: "none",
+              background: "transparent",
+              fontSize: 22,
+              cursor: "pointer",
+              color: C.textMuted,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        <div style={{ padding: 20 }}>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            spellCheck={false}
+            style={{
+              width: "100%",
+              height: 260,
+              fontFamily: MONO,
+              fontSize: 12.5,
+              lineHeight: 1.5,
+              padding: 12,
+              borderRadius: 10,
+              border: `1px solid ${C.border}`,
+              background: C.surfaceAlt,
+              color: C.ink,
+              resize: "vertical",
+              outline: "none",
+            }}
+          />
+          <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 12 }}>
+            <input
+              type="text"
+              placeholder="X-API-Key (only if the server requires one)"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              style={{
+                flex: 1,
+                padding: "9px 11px",
+                borderRadius: 8,
+                border: `1px solid ${C.border}`,
+                fontSize: 13,
+                fontFamily: MONO,
+                outline: "none",
+              }}
+            />
+            <button
+              onClick={submit}
+              disabled={busy}
+              style={{
+                padding: "10px 20px",
+                borderRadius: 8,
+                border: "none",
+                background: busy ? C.borderStrong : C.accent,
+                color: "#fff",
+                fontSize: 13.5,
+                fontWeight: 650,
+                cursor: busy ? "default" : "pointer",
+              }}
+            >
+              {busy ? "Sending…" : "Ingest"}
+            </button>
+          </div>
+          {msg && (
+            <div
+              style={{
+                marginTop: 12,
+                padding: "10px 12px",
+                borderRadius: 8,
+                fontSize: 13,
+                background: msg.ok ? C.tealSoft : C.roseSoft,
+                color: msg.ok ? C.teal : C.rose,
+              }}
+            >
+              {msg.text}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const SAMPLE_INGEST = JSON.stringify(
+  {
+    callId: "demo-" + Math.random().toString(36).slice(2, 10),
+    sourcePlatformId: "switch-lon-01",
+    sourcePlatformType: "Cisco UCM",
+    callStartTime: "2024-06-01T15:00:05.000Z",
+    callEndTime: "2024-06-01T15:03:20.000Z",
+    lastUpdateTime: "2024-06-01T15:03:20.000Z",
+    durationSeconds: 195,
+    callState: "ended",
+    callDirection: "inbound",
+    callType: "peer_to_peer",
+    mediaType: "voice",
+    participants: [
+      { participantId: "p1", role: "caller", extension: "+442071234567", group: "external" },
+      {
+        participantId: "p2",
+        role: "callee",
+        extension: "2210",
+        userId: "aturner",
+        displayName: "Alex Turner",
+        group: "customer-services-london",
+        recordingConfig: "record",
+      },
+    ],
+    events: [
+      { eventTime: "2024-06-01T15:00:00.000Z", eventType: "ringing", participantId: "p2" },
+      { eventTime: "2024-06-01T15:00:05.000Z", eventType: "connected" },
+      { eventTime: "2024-06-01T15:03:20.000Z", eventType: "disconnected", participantId: "p1" },
+    ],
+    cloudRecording: { recordingStatus: "recorded", recordingMethod: "automatic" },
+  },
+  null,
+  2
+);

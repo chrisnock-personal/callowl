@@ -1,0 +1,852 @@
+{
+  "_meta": {
+    "schema": "Open Standards CDR Schema v1.0.0",
+    "description": "Example call detail record API responses covering five common interaction scenarios.",
+    "scenarios": [
+      "1. Inbound Call (Simple two-party)",
+      "2. Inbound Call Queue Call (IVR/ACD routed)",
+      "3. Outbound Call",
+      "4. Inbound Call with Conference",
+      "5. Inbound Call with Transfer"
+    ]
+  },
+
+  "examples": [
+
+    {
+      "_scenario": "1. Inbound Call — Simple two-party direct inbound voice call",
+      "callId": "a1f3c2e0-0001-4b2a-9f10-000000000001",
+      "parentCallId": null,
+      "relatedCallIds": [],
+      "tenantId": "tenant-london",
+      "sourcePlatformId": "switch-lon-01",
+      "sourcePlatformType": "Cisco UCM",
+      "interactionStartTime": "2024-06-01T08:59:50.000Z",
+      "callStartTime": "2024-06-01T09:00:05.000Z",
+      "callEndTime": "2024-06-01T09:12:47.000Z",
+      "interactionEndTime": "2024-06-01T09:13:30.000Z",
+      "lastUpdateTime": "2024-06-01T09:13:30.000Z",
+      "durationSeconds": 762.0,
+      "callState": "ended",
+      "callDirection": "inbound",
+      "callType": "peer_to_peer",
+      "mediaType": "voice",
+      "callSource": null,
+      "wrapUpInfo": {
+        "wrapUpCode": "QUERY_RESOLVED",
+        "wrapUpNotes": "Customer enquired about account balance. Resolved on first contact.",
+        "wrapUpDurationSeconds": 43.0
+      },
+      "participants": [
+        {
+          "participantId": "p1",
+          "role": "caller",
+          "extension": "+442071234567",
+          "userId": null,
+          "displayName": "External Caller",
+          "deviceId": null,
+          "group": null,
+          "recordingConfig": "not_applicable",
+          "joinTime": "2024-06-01T08:59:50.000Z",
+          "leaveTime": "2024-06-01T09:12:47.000Z",
+          "device": null,
+          "slotNumber": null,
+          "handsetInfo": null
+        },
+        {
+          "participantId": "p2",
+          "role": "callee",
+          "extension": "2341",
+          "userId": "jsmith",
+          "displayName": "John Smith",
+          "deviceId": "device-0042",
+          "group": "customer-services-london",
+          "recordingConfig": "record",
+          "joinTime": "2024-06-01T09:00:05.000Z",
+          "leaveTime": "2024-06-01T09:12:47.000Z",
+          "device": {
+            "model": "XYZ UC SoftPhone",
+            "softwareVersion": "5.2.1.1042",
+            "macAddress": "00:1A:2B:3C:4D:5E",
+            "ipAddress": "10.0.1.45",
+            "audioCodec": "G.722",
+            "videoCodec": null
+          },
+          "slotNumber": null,
+          "handsetInfo": null
+        }
+      ],
+      "events": [
+        {
+          "eventTime": "2024-06-01T08:59:50.000Z",
+          "eventType": "ringing",
+          "participantId": "p1",
+          "targetParticipantId": "p2",
+          "detail": "Inbound call ringing at extension 2341",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T09:00:05.000Z",
+          "eventType": "connected",
+          "participantId": "p2",
+          "targetParticipantId": null,
+          "detail": "Call answered",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T09:12:47.000Z",
+          "eventType": "disconnected",
+          "participantId": "p1",
+          "targetParticipantId": null,
+          "detail": "Caller disconnected",
+          "metadata": {}
+        }
+      ],
+      "cloudRecording": {
+        "recordingStatus": "recorded",
+        "recordingMethod": "automatic",
+        "recordingId": "rec-a1f3c2e0-0001",
+        "mediaName": "call_20240601_090005_jsmith.mp4",
+        "downloadPath": "https://recordings.example.com/rec-a1f3c2e0-0001"
+      },
+      "qos": {
+        "mosScore": 4.3,
+        "latencyMs": 14.2,
+        "jitterMs": 2.1,
+        "packetLossPercent": 0.0,
+        "packetsTotal": 45720
+      },
+      "vendorSpecificFields": {}
+    },
+
+    {
+      "_scenario": "2. Inbound Call Queue Call — External caller routed through IVR then ACD queue to agent",
+      "callId": "b2e4d3f1-0002-4c3b-af21-000000000002",
+      "parentCallId": null,
+      "relatedCallIds": [],
+      "tenantId": "tenant-london",
+      "sourcePlatformId": "switch-lon-01",
+      "sourcePlatformType": "Cisco UCM",
+      "interactionStartTime": "2024-06-01T10:00:00.000Z",
+      "callStartTime": "2024-06-01T10:03:45.000Z",
+      "callEndTime": "2024-06-01T10:19:22.000Z",
+      "interactionEndTime": "2024-06-01T10:20:05.000Z",
+      "lastUpdateTime": "2024-06-01T10:20:05.000Z",
+      "durationSeconds": 937.0,
+      "callState": "ended",
+      "callDirection": "inbound",
+      "callType": "peer_to_peer",
+      "mediaType": "voice",
+      "callSource": {
+        "huntNumber": "08001234000",
+        "ivrInfo": "ivr-main > option-2-billing > option-1-account-query",
+        "queueInfo": "ACD-Billing-London",
+        "timeInIvrSeconds": 62.0,
+        "timeInQueueSeconds": 163.0
+      },
+      "wrapUpInfo": {
+        "wrapUpCode": "ESCALATED",
+        "wrapUpNotes": "Billing dispute. Raised ticket BIL-29341. Customer called back required within 48h.",
+        "wrapUpDurationSeconds": 43.0
+      },
+      "participants": [
+        {
+          "participantId": "p1",
+          "role": "caller",
+          "extension": "+447700900123",
+          "userId": null,
+          "displayName": "External Caller",
+          "deviceId": null,
+          "group": null,
+          "recordingConfig": "not_applicable",
+          "joinTime": "2024-06-01T10:00:00.000Z",
+          "leaveTime": "2024-06-01T10:19:22.000Z",
+          "device": null,
+          "slotNumber": null,
+          "handsetInfo": null
+        },
+        {
+          "participantId": "p2",
+          "role": "ivr",
+          "extension": "08001234000",
+          "userId": null,
+          "displayName": "IVR Main Menu",
+          "deviceId": "ivr-node-01",
+          "group": "ivr-system",
+          "recordingConfig": "not_applicable",
+          "joinTime": "2024-06-01T10:00:00.000Z",
+          "leaveTime": "2024-06-01T10:01:02.000Z",
+          "device": null,
+          "slotNumber": null,
+          "handsetInfo": null
+        },
+        {
+          "participantId": "p3",
+          "role": "queue",
+          "extension": "ACD-Billing-London",
+          "userId": null,
+          "displayName": "Billing Queue",
+          "deviceId": "acd-queue-billing",
+          "group": "billing-london",
+          "recordingConfig": "not_applicable",
+          "joinTime": "2024-06-01T10:01:02.000Z",
+          "leaveTime": "2024-06-01T10:03:45.000Z",
+          "device": null,
+          "slotNumber": null,
+          "handsetInfo": null
+        },
+        {
+          "participantId": "p4",
+          "role": "callee",
+          "extension": "3102",
+          "userId": "mwilliams",
+          "displayName": "Maria Williams",
+          "deviceId": "device-0087",
+          "group": "billing-london",
+          "recordingConfig": "record",
+          "joinTime": "2024-06-01T10:03:45.000Z",
+          "leaveTime": "2024-06-01T10:19:22.000Z",
+          "device": {
+            "model": "XYZ UC SoftPhone",
+            "softwareVersion": "5.2.1.1042",
+            "macAddress": "00:1A:2B:3C:4D:6F",
+            "ipAddress": "10.0.1.87",
+            "audioCodec": "G.711u",
+            "videoCodec": null
+          },
+          "slotNumber": null,
+          "handsetInfo": null
+        }
+      ],
+      "events": [
+        {
+          "eventTime": "2024-06-01T10:00:00.000Z",
+          "eventType": "ivr_entry",
+          "participantId": "p1",
+          "targetParticipantId": "p2",
+          "detail": "Caller entered IVR main menu",
+          "metadata": { "dnis": "08001234000" }
+        },
+        {
+          "eventTime": "2024-06-01T10:00:18.000Z",
+          "eventType": "function_key_press",
+          "participantId": "p1",
+          "targetParticipantId": null,
+          "detail": "DTMF: 2 — Billing selected",
+          "metadata": { "dtmf": "2", "ivrMenu": "main" }
+        },
+        {
+          "eventTime": "2024-06-01T10:00:44.000Z",
+          "eventType": "function_key_press",
+          "participantId": "p1",
+          "targetParticipantId": null,
+          "detail": "DTMF: 1 — Account query selected",
+          "metadata": { "dtmf": "1", "ivrMenu": "billing" }
+        },
+        {
+          "eventTime": "2024-06-01T10:01:02.000Z",
+          "eventType": "ivr_exit",
+          "participantId": "p1",
+          "targetParticipantId": "p2",
+          "detail": "Caller exited IVR — routing to ACD queue",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T10:01:02.000Z",
+          "eventType": "queue_entry",
+          "participantId": "p1",
+          "targetParticipantId": "p3",
+          "detail": "Caller entered ACD-Billing-London queue",
+          "metadata": { "queuePosition": 4 }
+        },
+        {
+          "eventTime": "2024-06-01T10:03:45.000Z",
+          "eventType": "queue_exit",
+          "participantId": "p1",
+          "targetParticipantId": "p3",
+          "detail": "Caller dequeued — agent available",
+          "metadata": { "queuePosition": 1 }
+        },
+        {
+          "eventTime": "2024-06-01T10:03:45.000Z",
+          "eventType": "ringing",
+          "participantId": "p1",
+          "targetParticipantId": "p4",
+          "detail": "Ringing at agent extension 3102",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T10:03:45.000Z",
+          "eventType": "connected",
+          "participantId": "p4",
+          "targetParticipantId": null,
+          "detail": "Agent answered",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T10:19:22.000Z",
+          "eventType": "disconnected",
+          "participantId": "p1",
+          "targetParticipantId": null,
+          "detail": "Caller disconnected",
+          "metadata": {}
+        }
+      ],
+      "cloudRecording": {
+        "recordingStatus": "recorded",
+        "recordingMethod": "automatic",
+        "recordingId": "rec-b2e4d3f1-0002",
+        "mediaName": "call_20240601_100345_mwilliams.mp4",
+        "downloadPath": "https://recordings.example.com/rec-b2e4d3f1-0002"
+      },
+      "qos": {
+        "mosScore": 4.1,
+        "latencyMs": 18.7,
+        "jitterMs": 3.4,
+        "packetLossPercent": 0.1,
+        "packetsTotal": 56160
+      },
+      "vendorSpecificFields": {}
+    },
+
+    {
+      "_scenario": "3. Outbound Call — Agent-initiated outbound call to external number",
+      "callId": "c3f5e4a2-0003-4d4c-b032-000000000003",
+      "parentCallId": null,
+      "relatedCallIds": [],
+      "tenantId": "tenant-london",
+      "sourcePlatformId": "switch-lon-01",
+      "sourcePlatformType": "Cisco UCM",
+      "interactionStartTime": "2024-06-01T11:15:00.000Z",
+      "callStartTime": "2024-06-01T11:15:22.000Z",
+      "callEndTime": "2024-06-01T11:28:05.000Z",
+      "interactionEndTime": "2024-06-01T11:29:10.000Z",
+      "lastUpdateTime": "2024-06-01T11:29:10.000Z",
+      "durationSeconds": 763.0,
+      "callState": "ended",
+      "callDirection": "outbound",
+      "callType": "peer_to_peer",
+      "mediaType": "voice",
+      "callSource": null,
+      "wrapUpInfo": {
+        "wrapUpCode": "CALLBACK_COMPLETE",
+        "wrapUpNotes": "Outbound callback for ticket CS-10482. Customer confirmed issue resolved.",
+        "wrapUpDurationSeconds": 65.0
+      },
+      "participants": [
+        {
+          "participantId": "p1",
+          "role": "caller",
+          "extension": "2341",
+          "userId": "jsmith",
+          "displayName": "John Smith",
+          "deviceId": "device-0042",
+          "group": "customer-services-london",
+          "recordingConfig": "record",
+          "joinTime": "2024-06-01T11:15:00.000Z",
+          "leaveTime": "2024-06-01T11:28:05.000Z",
+          "device": {
+            "model": "XYZ UC SoftPhone",
+            "softwareVersion": "5.2.1.1042",
+            "macAddress": "00:1A:2B:3C:4D:5E",
+            "ipAddress": "10.0.1.45",
+            "audioCodec": "G.722",
+            "videoCodec": null
+          },
+          "slotNumber": null,
+          "handsetInfo": null
+        },
+        {
+          "participantId": "p2",
+          "role": "callee",
+          "extension": "+442079876543",
+          "userId": null,
+          "displayName": "External Party",
+          "deviceId": null,
+          "group": null,
+          "recordingConfig": "not_applicable",
+          "joinTime": "2024-06-01T11:15:22.000Z",
+          "leaveTime": "2024-06-01T11:28:05.000Z",
+          "device": null,
+          "slotNumber": null,
+          "handsetInfo": null
+        }
+      ],
+      "events": [
+        {
+          "eventTime": "2024-06-01T11:15:00.000Z",
+          "eventType": "ringing",
+          "participantId": "p1",
+          "targetParticipantId": "p2",
+          "detail": "Outbound call dialling +442079876543",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T11:15:22.000Z",
+          "eventType": "connected",
+          "participantId": "p2",
+          "targetParticipantId": null,
+          "detail": "External party answered",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T11:21:10.000Z",
+          "eventType": "hold",
+          "participantId": "p1",
+          "targetParticipantId": null,
+          "detail": "Agent placed call on hold",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T11:21:55.000Z",
+          "eventType": "resume",
+          "participantId": "p1",
+          "targetParticipantId": null,
+          "detail": "Agent resumed call",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T11:28:05.000Z",
+          "eventType": "disconnected",
+          "participantId": "p1",
+          "targetParticipantId": null,
+          "detail": "Agent disconnected",
+          "metadata": {}
+        }
+      ],
+      "cloudRecording": {
+        "recordingStatus": "recorded",
+        "recordingMethod": "automatic",
+        "recordingId": "rec-c3f5e4a2-0003",
+        "mediaName": "call_20240601_111522_jsmith_outbound.mp4",
+        "downloadPath": "https://recordings.example.com/rec-c3f5e4a2-0003"
+      },
+      "qos": {
+        "mosScore": 4.2,
+        "latencyMs": 22.1,
+        "jitterMs": 4.0,
+        "packetLossPercent": 0.2,
+        "packetsTotal": 45780
+      },
+      "vendorSpecificFields": {}
+    },
+
+    {
+      "_scenario": "4. Inbound Call with Conference — Agent adds a third-party specialist mid-call, creating a three-way conference",
+      "callId": "d4a6b5c3-0004-4e5d-c143-000000000004",
+      "parentCallId": null,
+      "relatedCallIds": [
+        "d4a6b5c3-0004-4e5d-c143-000000000004-leg2"
+      ],
+      "tenantId": "tenant-london",
+      "sourcePlatformId": "switch-lon-01",
+      "sourcePlatformType": "Cisco UCM",
+      "interactionStartTime": "2024-06-01T13:30:00.000Z",
+      "callStartTime": "2024-06-01T13:30:12.000Z",
+      "callEndTime": "2024-06-01T13:52:44.000Z",
+      "interactionEndTime": "2024-06-01T13:53:30.000Z",
+      "lastUpdateTime": "2024-06-01T13:53:30.000Z",
+      "durationSeconds": 1352.0,
+      "callState": "ended",
+      "callDirection": "inbound",
+      "callType": "conference",
+      "mediaType": "voice",
+      "callSource": null,
+      "wrapUpInfo": {
+        "wrapUpCode": "SPECIALIST_CONSULTED",
+        "wrapUpNotes": "Complex technical query. Specialist dteague joined at 13:41. Issue resolved in-call.",
+        "wrapUpDurationSeconds": 46.0
+      },
+      "participants": [
+        {
+          "participantId": "p1",
+          "role": "caller",
+          "extension": "+442071239999",
+          "userId": null,
+          "displayName": "External Caller",
+          "deviceId": null,
+          "group": null,
+          "recordingConfig": "not_applicable",
+          "joinTime": "2024-06-01T13:30:00.000Z",
+          "leaveTime": "2024-06-01T13:52:44.000Z",
+          "device": null,
+          "slotNumber": null,
+          "handsetInfo": null
+        },
+        {
+          "participantId": "p2",
+          "role": "callee",
+          "extension": "2341",
+          "userId": "jsmith",
+          "displayName": "John Smith",
+          "deviceId": "device-0042",
+          "group": "customer-services-london",
+          "recordingConfig": "record",
+          "joinTime": "2024-06-01T13:30:12.000Z",
+          "leaveTime": "2024-06-01T13:52:44.000Z",
+          "device": {
+            "model": "XYZ UC SoftPhone",
+            "softwareVersion": "5.2.1.1042",
+            "macAddress": "00:1A:2B:3C:4D:5E",
+            "ipAddress": "10.0.1.45",
+            "audioCodec": "G.722",
+            "videoCodec": null
+          },
+          "slotNumber": null,
+          "handsetInfo": null
+        },
+        {
+          "participantId": "p3",
+          "role": "conference_participant",
+          "extension": "4501",
+          "userId": "dteague",
+          "displayName": "David Teague",
+          "deviceId": "device-0211",
+          "group": "technical-specialists",
+          "recordingConfig": "record",
+          "joinTime": "2024-06-01T13:41:08.000Z",
+          "leaveTime": "2024-06-01T13:52:44.000Z",
+          "device": {
+            "model": "XYZ UC SoftPhone",
+            "softwareVersion": "5.2.1.1042",
+            "macAddress": "00:1A:2B:3C:4D:AA",
+            "ipAddress": "10.0.2.11",
+            "audioCodec": "G.722",
+            "videoCodec": null
+          },
+          "slotNumber": null,
+          "handsetInfo": null
+        }
+      ],
+      "events": [
+        {
+          "eventTime": "2024-06-01T13:30:00.000Z",
+          "eventType": "ringing",
+          "participantId": "p1",
+          "targetParticipantId": "p2",
+          "detail": "Inbound call ringing at extension 2341",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T13:30:12.000Z",
+          "eventType": "connected",
+          "participantId": "p2",
+          "targetParticipantId": null,
+          "detail": "Call answered by jsmith",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T13:41:00.000Z",
+          "eventType": "hold",
+          "participantId": "p2",
+          "targetParticipantId": null,
+          "detail": "Agent placed caller on hold to dial specialist",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T13:41:00.000Z",
+          "eventType": "conference_created",
+          "participantId": "p2",
+          "targetParticipantId": null,
+          "detail": "Agent initiated conference bridge",
+          "metadata": { "conferenceBridgeId": "conf-bridge-0044" }
+        },
+        {
+          "eventTime": "2024-06-01T13:41:08.000Z",
+          "eventType": "participant_join",
+          "participantId": "p3",
+          "targetParticipantId": null,
+          "detail": "Specialist dteague joined conference",
+          "metadata": { "conferenceBridgeId": "conf-bridge-0044" }
+        },
+        {
+          "eventTime": "2024-06-01T13:41:08.000Z",
+          "eventType": "resume",
+          "participantId": "p2",
+          "targetParticipantId": null,
+          "detail": "Caller rejoined — three-way conference active",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T13:41:08.000Z",
+          "eventType": "participant_join",
+          "participantId": "p1",
+          "targetParticipantId": null,
+          "detail": "Original caller rejoined conference",
+          "metadata": { "conferenceBridgeId": "conf-bridge-0044" }
+        },
+        {
+          "eventTime": "2024-06-01T13:52:44.000Z",
+          "eventType": "participant_leave",
+          "participantId": "p3",
+          "targetParticipantId": null,
+          "detail": "Specialist dteague left conference",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T13:52:44.000Z",
+          "eventType": "disconnected",
+          "participantId": "p1",
+          "targetParticipantId": null,
+          "detail": "Caller disconnected",
+          "metadata": {}
+        }
+      ],
+      "cloudRecording": {
+        "recordingStatus": "recorded",
+        "recordingMethod": "automatic",
+        "recordingId": "rec-d4a6b5c3-0004",
+        "mediaName": "call_20240601_133012_jsmith_conference.mp4",
+        "downloadPath": "https://recordings.example.com/rec-d4a6b5c3-0004"
+      },
+      "qos": {
+        "mosScore": 4.0,
+        "latencyMs": 19.5,
+        "jitterMs": 3.8,
+        "packetLossPercent": 0.1,
+        "packetsTotal": 81120
+      },
+      "vendorSpecificFields": {}
+    },
+
+    {
+      "_scenario": "5a. Inbound Call with Transfer — ORIGINAL LEG: Caller connected to first agent who performs a warm transfer to a second agent",
+      "callId": "e5b7c6d4-0005-4f6e-d254-000000000005",
+      "parentCallId": null,
+      "relatedCallIds": [
+        "e5b7c6d4-0005-4f6e-d254-000000000005-consult",
+        "e5b7c6d4-0005-4f6e-d254-000000000006"
+      ],
+      "tenantId": "tenant-london",
+      "sourcePlatformId": "switch-lon-01",
+      "sourcePlatformType": "Cisco UCM",
+      "interactionStartTime": "2024-06-01T14:05:00.000Z",
+      "callStartTime": "2024-06-01T14:05:18.000Z",
+      "callEndTime": "2024-06-01T14:09:55.000Z",
+      "interactionEndTime": "2024-06-01T14:09:55.000Z",
+      "lastUpdateTime": "2024-06-01T14:09:55.000Z",
+      "durationSeconds": 277.0,
+      "callState": "ended",
+      "callDirection": "inbound",
+      "callType": "peer_to_peer",
+      "mediaType": "voice",
+      "callSource": null,
+      "wrapUpInfo": null,
+      "participants": [
+        {
+          "participantId": "p1",
+          "role": "caller",
+          "extension": "+442071238888",
+          "userId": null,
+          "displayName": "External Caller",
+          "deviceId": null,
+          "group": null,
+          "recordingConfig": "not_applicable",
+          "joinTime": "2024-06-01T14:05:00.000Z",
+          "leaveTime": "2024-06-01T14:09:55.000Z",
+          "device": null,
+          "slotNumber": null,
+          "handsetInfo": null
+        },
+        {
+          "participantId": "p2",
+          "role": "transfer_source",
+          "extension": "2341",
+          "userId": "jsmith",
+          "displayName": "John Smith",
+          "deviceId": "device-0042",
+          "group": "customer-services-london",
+          "recordingConfig": "record",
+          "joinTime": "2024-06-01T14:05:18.000Z",
+          "leaveTime": "2024-06-01T14:09:55.000Z",
+          "device": {
+            "model": "XYZ UC SoftPhone",
+            "softwareVersion": "5.2.1.1042",
+            "macAddress": "00:1A:2B:3C:4D:5E",
+            "ipAddress": "10.0.1.45",
+            "audioCodec": "G.722",
+            "videoCodec": null
+          },
+          "slotNumber": null,
+          "handsetInfo": null
+        }
+      ],
+      "events": [
+        {
+          "eventTime": "2024-06-01T14:05:00.000Z",
+          "eventType": "ringing",
+          "participantId": "p1",
+          "targetParticipantId": "p2",
+          "detail": "Inbound call ringing at extension 2341",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T14:05:18.000Z",
+          "eventType": "connected",
+          "participantId": "p2",
+          "targetParticipantId": null,
+          "detail": "Call answered by jsmith",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T14:08:30.000Z",
+          "eventType": "hold",
+          "participantId": "p2",
+          "targetParticipantId": null,
+          "detail": "Agent placed caller on hold to consult transfer target",
+          "metadata": {}
+        },
+        {
+          "eventTime": "2024-06-01T14:08:30.000Z",
+          "eventType": "transfer_initiated",
+          "participantId": "p2",
+          "targetParticipantId": null,
+          "detail": "Warm transfer initiated to extension 3301 (sahmad)",
+          "metadata": {
+            "transferType": "warm",
+            "targetExtension": "3301",
+            "consultationCallId": "e5b7c6d4-0005-4f6e-d254-000000000005-consult"
+          }
+        },
+        {
+          "eventTime": "2024-06-01T14:09:55.000Z",
+          "eventType": "transfer_completed",
+          "participantId": "p2",
+          "targetParticipantId": null,
+          "detail": "Transfer completed. Caller connected to sahmad on new leg.",
+          "metadata": {
+            "newCallId": "e5b7c6d4-0005-4f6e-d254-000000000006"
+          }
+        },
+        {
+          "eventTime": "2024-06-01T14:09:55.000Z",
+          "eventType": "disconnected",
+          "participantId": "p2",
+          "targetParticipantId": null,
+          "detail": "Transfer source agent dropped from call",
+          "metadata": {}
+        }
+      ],
+      "cloudRecording": {
+        "recordingStatus": "recorded",
+        "recordingMethod": "automatic",
+        "recordingId": "rec-e5b7c6d4-0005",
+        "mediaName": "call_20240601_140518_jsmith_leg1.mp4",
+        "downloadPath": "https://recordings.example.com/rec-e5b7c6d4-0005"
+      },
+      "qos": {
+        "mosScore": 4.3,
+        "latencyMs": 15.1,
+        "jitterMs": 2.7,
+        "packetLossPercent": 0.0,
+        "packetsTotal": 16620
+      },
+      "vendorSpecificFields": {}
+    },
+
+    {
+      "_scenario": "5b. Inbound Call with Transfer — TRANSFERRED LEG: New call leg created after warm transfer completes. Caller now connected to second agent.",
+      "callId": "e5b7c6d4-0005-4f6e-d254-000000000006",
+      "parentCallId": "e5b7c6d4-0005-4f6e-d254-000000000005",
+      "relatedCallIds": [
+        "e5b7c6d4-0005-4f6e-d254-000000000005",
+        "e5b7c6d4-0005-4f6e-d254-000000000005-consult"
+      ],
+      "tenantId": "tenant-london",
+      "sourcePlatformId": "switch-lon-01",
+      "sourcePlatformType": "Cisco UCM",
+      "interactionStartTime": "2024-06-01T14:09:55.000Z",
+      "callStartTime": "2024-06-01T14:09:55.000Z",
+      "callEndTime": "2024-06-01T14:27:33.000Z",
+      "interactionEndTime": "2024-06-01T14:28:20.000Z",
+      "lastUpdateTime": "2024-06-01T14:28:20.000Z",
+      "durationSeconds": 1058.0,
+      "callState": "ended",
+      "callDirection": "inbound",
+      "callType": "peer_to_peer",
+      "mediaType": "voice",
+      "callSource": null,
+      "wrapUpInfo": {
+        "wrapUpCode": "QUERY_RESOLVED",
+        "wrapUpNotes": "Specialist handling post-transfer. Customer query on account credit fully resolved.",
+        "wrapUpDurationSeconds": 47.0
+      },
+      "participants": [
+        {
+          "participantId": "p1",
+          "role": "caller",
+          "extension": "+442071238888",
+          "userId": null,
+          "displayName": "External Caller",
+          "deviceId": null,
+          "group": null,
+          "recordingConfig": "not_applicable",
+          "joinTime": "2024-06-01T14:09:55.000Z",
+          "leaveTime": "2024-06-01T14:27:33.000Z",
+          "device": null,
+          "slotNumber": null,
+          "handsetInfo": null
+        },
+        {
+          "participantId": "p2",
+          "role": "transfer_target",
+          "extension": "3301",
+          "userId": "sahmad",
+          "displayName": "Sara Ahmad",
+          "deviceId": "device-0155",
+          "group": "customer-services-specialist",
+          "recordingConfig": "record",
+          "joinTime": "2024-06-01T14:09:55.000Z",
+          "leaveTime": "2024-06-01T14:27:33.000Z",
+          "device": {
+            "model": "XYZ UC SoftPhone",
+            "softwareVersion": "5.2.1.1042",
+            "macAddress": "00:1A:2B:3C:4D:CC",
+            "ipAddress": "10.0.1.155",
+            "audioCodec": "G.722",
+            "videoCodec": null
+          },
+          "slotNumber": null,
+          "handsetInfo": null
+        }
+      ],
+      "events": [
+        {
+          "eventTime": "2024-06-01T14:09:55.000Z",
+          "eventType": "connected",
+          "participantId": "p2",
+          "targetParticipantId": null,
+          "detail": "Transferred call connected to sahmad",
+          "metadata": {
+            "transferredFromCallId": "e5b7c6d4-0005-4f6e-d254-000000000005",
+            "transferredByUserId": "jsmith"
+          }
+        },
+        {
+          "eventTime": "2024-06-01T14:27:33.000Z",
+          "eventType": "disconnected",
+          "participantId": "p1",
+          "targetParticipantId": null,
+          "detail": "Caller disconnected",
+          "metadata": {}
+        }
+      ],
+      "cloudRecording": {
+        "recordingStatus": "recorded",
+        "recordingMethod": "automatic",
+        "recordingId": "rec-e5b7c6d4-0006",
+        "mediaName": "call_20240601_140955_sahmad_leg2.mp4",
+        "downloadPath": "https://recordings.example.com/rec-e5b7c6d4-0006"
+      },
+      "qos": {
+        "mosScore": 4.4,
+        "latencyMs": 13.9,
+        "jitterMs": 2.2,
+        "packetLossPercent": 0.0,
+        "packetsTotal": 63480
+      },
+      "vendorSpecificFields": {}
+    }
+
+  ]
+}
