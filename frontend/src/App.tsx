@@ -4439,6 +4439,40 @@ function DetailDrawer({
             </Section>
           )}
 
+          {record.transcription && (
+            <Section title="Transcription">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <Field label="Status">{record.transcription.transcriptionStatus}</Field>
+                <Field label="Method">{record.transcription.transcriptionMethod}</Field>
+                <Field label="Provider">{record.transcription.provider}</Field>
+                <Field label="Language">{record.transcription.language}</Field>
+                <Field label="Confidence">
+                  {record.transcription.confidenceScore != null
+                    ? `${Math.round(record.transcription.confidenceScore * 100)}%`
+                    : "—"}
+                </Field>
+                <Field label="Word count">{record.transcription.wordCount}</Field>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+                {record.transcription.redacted && (
+                  <Pill fg={C.amber} bg={C.amberSoft}>
+                    PII redacted
+                  </Pill>
+                )}
+                {record.transcription.downloadPath && (
+                  <a
+                    href={record.transcription.downloadPath}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ fontSize: 13, color: C.accentDeep, fontWeight: 600 }}
+                  >
+                    Open transcript ↗
+                  </a>
+                )}
+              </div>
+            </Section>
+          )}
+
           {record.qos && (
             <Section title="Quality of service">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>

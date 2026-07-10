@@ -13,6 +13,7 @@ info:
     - Full call event timelines
     - Device, codec, and QoS metadata
     - Cloud recording references
+    - Transcription references
 
     **Versioning:** All breaking changes will be published as a new major API version.
     Consumers should specify the desired version via the `Accept` header or URL prefix.
@@ -434,6 +435,10 @@ components:
         cloudRecording:
           $ref: '#/components/schemas/CloudRecordingInfo'
 
+        # ── Transcription ──
+        transcription:
+          $ref: '#/components/schemas/TranscriptionInfo'
+
         # ── QoS ──
         qos:
           $ref: '#/components/schemas/QoSInfo'
@@ -728,6 +733,69 @@ components:
           format: uri
           description: "**[Optional]** URI to download or stream the recording."
           example: "https://recordings.example.com/rec-9f8e7d6c"
+
+    # ── Transcription ──
+    TranscriptionInfo:
+      type: object
+      description: Reference to a cloud-held transcription for this interaction.
+      properties:
+        transcriptionStatus:
+          type: string
+          enum: [transcribed, not_transcribed, partial, unknown]
+          description: "**[Optional]** Whether this interaction was transcribed."
+          example: "transcribed"
+        transcriptionMethod:
+          type: string
+          enum: [automatic, manual, on_demand, unknown]
+          description: "**[Optional]** How transcription was triggered."
+          example: "automatic"
+        transcriptId:
+          type: string
+          description: "**[Optional]** Unique ID of the transcript as held by the transcription provider."
+          example: "txn-9f8e7d6c"
+        recordingId:
+          type: string
+          description: |
+            **[Optional]** ID of the source recording this transcript was generated from.
+            Correlates to `CloudRecordingInfo.recordingId`.
+          example: "rec-9f8e7d6c"
+        provider:
+          type: string
+          description: |
+            **[Optional]** Name of the transcription engine or vendor
+            (e.g. `"AWS Transcribe"`, `"Azure Speech"`, `"Whisper"`). Free-text to
+            accommodate the open vendor ecosystem.
+          example: "AWS Transcribe"
+        language:
+          type: string
+          description: "**[Optional]** BCP-47 language code of the transcribed audio."
+          example: "en-GB"
+        confidenceScore:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: "**[Optional]** Overall transcription confidence score, if provided by the engine."
+          example: 0.94
+        wordCount:
+          type: integer
+          description: "**[Optional]** Total number of words in the transcript."
+          example: 1523
+        redacted:
+          type: boolean
+          description: |
+            **[Optional]** Whether PCI/PII redaction has been applied to the
+            transcript text (e.g. card numbers, security answers).
+          example: true
+        mediaName:
+          type: string
+          description: "**[Optional]** Transcript file name."
+          example: "call_20240601_080005_cc2e4b91.json"
+        downloadPath:
+          type: string
+          format: uri
+          description: "**[Optional]** URI to download the transcript."
+          example: "https://transcripts.example.com/txn-9f8e7d6c"
 
     # ── QoS ──
     QoSInfo:

@@ -103,6 +103,20 @@ export interface CloudRecordingInfo {
   downloadPath?: string;
 }
 
+export interface TranscriptionInfo {
+  transcriptionStatus?: string;
+  transcriptionMethod?: string;
+  transcriptId?: string;
+  recordingId?: string;
+  provider?: string;
+  language?: string;
+  confidenceScore?: number;
+  wordCount?: number;
+  redacted?: boolean;
+  mediaName?: string;
+  downloadPath?: string;
+}
+
 export interface QoSInfo {
   mosScore?: number;
   latencyMs?: number;
@@ -139,6 +153,7 @@ export interface CallRecord {
   participants: Participant[];
   events?: CallEvent[];
   cloudRecording?: CloudRecordingInfo;
+  transcription?: TranscriptionInfo;
   qos?: QoSInfo;
   vendorSpecificFields?: Record<string, unknown>;
   _scenario?: string;

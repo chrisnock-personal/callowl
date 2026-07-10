@@ -144,6 +144,28 @@ export const cloudRecordingSchema = z
   })
   .passthrough();
 
+export const transcriptionInfoSchema = z
+  .object({
+    transcriptionStatus: z
+      .enum(["transcribed", "not_transcribed", "partial", "unknown"])
+      .nullish(),
+    transcriptionMethod: z
+      .enum(["automatic", "manual", "on_demand", "unknown"])
+      .nullish(),
+    transcriptId: z.string().nullish(),
+    // Correlates to cloudRecordingSchema's recordingId — not cross-validated
+    // against it, same as the standard leaves it a free-text reference.
+    recordingId: z.string().nullish(),
+    provider: z.string().nullish(),
+    language: z.string().nullish(),
+    confidenceScore: z.number().min(0).max(1).nullish(),
+    wordCount: z.number().int().nullish(),
+    redacted: z.boolean().nullish(),
+    mediaName: z.string().nullish(),
+    downloadPath: z.string().nullish(),
+  })
+  .passthrough();
+
 export const qosSchema = z
   .object({
     mosScore: z.number().min(1).max(5).nullish(),
@@ -208,8 +230,9 @@ export const callRecordSchema = z
     // Timeline
     events: z.array(callEventSchema).nullish(),
 
-    // Recording & QoS
+    // Recording, transcription & QoS
     cloudRecording: cloudRecordingSchema.nullish(),
+    transcription: transcriptionInfoSchema.nullish(),
     qos: qosSchema.nullish(),
 
     // Extensibility

@@ -109,6 +109,19 @@
         "mediaName": "call_20240601_090005_jsmith.mp4",
         "downloadPath": "https://recordings.example.com/rec-a1f3c2e0-0001"
       },
+      "transcription": {
+        "transcriptionStatus": "transcribed",
+        "transcriptionMethod": "automatic",
+        "transcriptId": "txn-a1f3c2e0-0001",
+        "recordingId": "rec-a1f3c2e0-0001",
+        "provider": "AWS Transcribe",
+        "language": "en-GB",
+        "confidenceScore": 0.94,
+        "wordCount": 342,
+        "redacted": true,
+        "mediaName": "call_20240601_090005_jsmith.json",
+        "downloadPath": "https://transcripts.example.com/txn-a1f3c2e0-0001"
+      },
       "qos": {
         "mosScore": 4.3,
         "latencyMs": 14.2,

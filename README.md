@@ -19,6 +19,8 @@ Then open the dashboard at **http://localhost:8080**.
 
 On first boot the backend runs migrations and seeds the five example scenarios from the standard (simple inbound, IVR/ACD queue, outbound, conference, transfer), so the dashboard has data immediately. The default time window covers those samples (2024-06-01).
 
+For a fuller demo — enough volume for the Insights charts, drill-across, and advanced filter to actually have something to show — run `npm run seed:demo` from `backend/` (or `podman-compose run --rm backend node dist/db/seedDemo.js` against a running compose stack). It generates 5,000 schema-conformant records spread across the last 6 months: multi-leg transfers, multi-participant conferences, IVR/queue routing, QoS metrics (including a deliberate tail of poor-quality calls), supervisor monitor/barge-in, recording and transcription references (correlated to each other, not every recording gets transcribed), and every other field in the standard (device info, wrap-up notes, vendor-specific fields, participant join/leave/slot/handset detail) — not just the common ones. Every generated record is validated against the schema before ingest. This is a manual, opt-in step (unlike the five standard examples, it doesn't run automatically on boot) — it's meant for demoing or load-testing the dashboard, not a fresh-install default.
+
 Services:
 
 - **frontend** — nginx serving the built React app, reverse-proxying `/api` to the backend (host port `8080`)
@@ -60,7 +62,7 @@ Base path: `/api/cdr/v1`. Interactive docs (Swagger UI) at `/api/cdr/v1/docs`.
 | `GET` | `/health` | Health + version probe (unauthenticated) |
 | `POST` | `/calls/ingest` | **Platform extension** — ingest one record or an array (`INGEST_API_KEY` or a per-user API key) |
 
-`GET /calls` supports the standard's documented parameters: `startTime` and `endTime` (both required, UTC ISO-8601), `mediaType` (comma-delimited), `groups` / `excludeGroups` (comma-delimited), `page`, `pageSize` (max 1000), and the `X-Tenant-Id` header. Records are ordered by `lastUpdateTime` (falling back to `endTime`, then `startTime`) ascending. Platform extensions on top: `sourcePlatformId` (comma-delimited), `participant` (matches `participantId`/`userId`/`displayName`/`extension`), `queue` (matches `callSource.queueInfo`, comma-delimited), and `ivr` (matches `callSource.ivrInfo`, comma-delimited).
+`GET /calls` supports the standard's documented parameters: `startTime` and `endTime` (both required, UTC ISO-8601), `mediaType` (comma-delimited), `groups` / `excludeGroups` (comma-delimited), `page`, `pageSize` (max 1000), and the `X-Tenant-Id` header. Records are ordered by `lastUpdateTime` (falling back to `endTime`, then `startTime`) ascending. Platform extensions on top: `sourcePlatformId` (comma-delimited), `participant` (matches `participantId`/`userId`/`displayName`/`extension`), `queue` (matches `callSource.queueInfo`, comma-delimited), `ivr` (matches `callSource.ivrInfo`, comma-delimited), and `advanced` — numeric conditions the fixed filters can't express, e.g. `advanced=mos < 3, jitter > 50` (comma-separated, ANDed). Supported fields: `mos`, `jitter`, `latency`, `packetLoss` (all from `qos`), `duration` (`durationSeconds`), `ivrTime`/`queueTime` (`callSource.timeInIvrSeconds`/`timeInQueueSeconds`); operators: `<`, `<=`, `>`, `>=`, `=`, `!=`. Field names are a fixed allowlist mapped to specific SQL column expressions server-side — an unknown field or malformed clause is rejected with `400`, and no part of the expression is ever interpolated directly into SQL. In the dashboard, this lives in the Filters popover as an **Advanced** field.
 
 All of the above except `/health`, `/openapi.json`, `/docs`, and `POST /calls/ingest` require a logged-in session — see [Authentication & scoped access](#authentication--scoped-access).
 
@@ -76,7 +78,7 @@ curl -X POST http://localhost:8080/api/cdr/v1/calls/ingest \
   -d @my-call.json
 ```
 
-To require auth, set `INGEST_API_KEY` in `.env`; clients then send `X-API-Key: <key>`. Left blank, ingest is open (fine for a local lab). The dashboard's **Ingest records** button posts JSON straight to this endpoint.
+To require auth, set `INGEST_API_KEY` in `.env`; clients then send `X-API-Key: <key>`. Left blank, ingest is open (fine for a local lab). A per-user API key works too, as an alternative to the shared secret — see [Authentication & scoped access](#authentication--scoped-access). The dashboard's **Ingest records** button posts JSON straight to this endpoint.
 
 ---
 
@@ -88,7 +90,7 @@ Logging in is always required — there's no open mode for the dashboard or the 
 
 **Bootstrap admin** — on first boot, if the `users` table is empty, one admin account is created from `BOOTSTRAP_ADMIN_USERNAME` (default `admin`) / `BOOTSTRAP_ADMIN_PASSWORD`. Leave the password blank and one is generated and printed once to the backend's startup logs (`podman-compose logs backend` / `docker compose logs backend`) — save it from there, it isn't stored anywhere else in recoverable form.
 
-**Managing users** — admin-only, via the dashboard's header menu (**⋯** → **Users**): add a user (username, password, role, optional scope), or delete one. Each user is `admin` or `viewer`; only admins see the Users panel or can manage backups/restore. `PATCH /admin/users/{id}` exists for scripted use (e.g. changing scope or resetting a password) but isn't wired into the UI yet.
+**Managing users** — admin-only, via the dashboard's header menu (**⋯** → **Users**): add a user (username, password, role, optional scope), edit one (role, scope, and/or reset the password — leave the password field blank to keep it unchanged), or delete one. Each user is `admin` or `viewer`; only admins see the Users panel or can manage backups/restore. Editing your own account and changing your role away from `admin` asks for confirmation first, since it takes effect immediately and could lock you out.
 
 **Scoped access** — each user has `allowedGroups` and `allowedSourcePlatformIds`, either `null` (unrestricted) or a specific list. A scoped user's requests are constrained to their allowed set: an unfiltered request defaults to their full allowed set, and an explicit filter is intersected with it — a user can never widen their own access by asking for more, and asking for something entirely outside their scope returns zero records rather than an error (so the boundary isn't discoverable by probing). Set scope as a comma-separated list in the add-user form; blank means unrestricted.
 
@@ -117,10 +119,10 @@ Layout:
 ```
 backend/src/
   config/        env config (zod-validated)
-  db/            pg pool, migration runner, example seeder, bootstrap admin seeder
+  db/            pg pool, migration runner, example seeder, bootstrap admin seeder, rich demo data generator
   migrations/    sequential SQL (001 table, 002 indexes, 003+ backfills, 005 users/sessions, 006 API keys, 007 audit log)
   schemas/       zod mirror of the standard — the ingest gatekeeper
-  services/      ingest, read (list/get), statistics, auth (users/sessions/API keys), audit log
+  services/      ingest, read (list/get), statistics, auth (users/sessions/API keys), audit log, advanced filter parsing
   middleware/    auth (session cookie, API keys, access scoping), audit logging
   routes/        calls, statistics, health, admin, auth
   openapi.ts     serves the standard's YAML + the platform extensions
@@ -167,13 +169,15 @@ cd backend && npm install && npm run dev
 cd frontend && npm install && npm run dev
 ```
 
-`npm run migrate` and `npm run seed` in `backend/` run those steps standalone.
+`npm run migrate` and `npm run seed` in `backend/` run those steps standalone; `npm run seed:demo` runs the rich 5,000-record generator (see [Quick start](#quick-start)).
 
 ---
 
 ## Note on the standard
 
 The schema marks `callEndTime` as **required** on `CallRecord`, but the same field's description says its absence implies an ongoing call (`callState: ongoing`). Those can't both hold. This platform treats `callEndTime` as optional so ongoing calls can be logged — worth reconciling in a future revision of the standard (either drop it from `required`, or document that ongoing records omit it as an explicit exception).
+
+`backend/src/data/cdr-schema.yaml` and `cdr-examples.json` are vendored copies of the standard, not live references to it — `/openapi.json` and the Swagger UI at `/docs` serve the schema file directly, and the examples file is what `npm run seed`/`seedExamples()` loads on first boot, so both need to be manually re-synced when the upstream standard changes (most recently: an optional `transcription` field on `CallRecord`, referencing a `TranscriptionInfo` object — status, method, provider, language, confidence score, word count, a PII-redaction flag, and a download path, closely mirroring `cloudRecording`'s shape — added to both the schema and the first example scenario). Keeping this platform's ingest validation (`schemas/cdr.ts`) in sync with the vendored schema is a manual step too — there's no generation from the YAML.
 
 ---
 
@@ -187,10 +191,7 @@ A prototype: no TLS, single-node Postgres, statistics computed on the fly. Enoug
 
 Not yet implemented — tracked here for now:
 
-- **User accounts & scoped access** — authenticate dashboard/API users and restrict which `sourcePlatformId`s and `groups` each user can see records for, rather than the current all-or-nothing access.
-- **A proper config/settings UI** — the **⋯** header menu works for a couple of peripheral items (docs link, backups) but won't scale as a real admin surface. Once user accounts exist, this is where they'd be managed — creating/removing users, scoping their `sourcePlatformId`/`groups` access, and managing API keys (rotating `INGEST_API_KEY`/`ADMIN_API_KEY`, or moving to per-user keys instead of the current shared ones) — rather than editing `.env` and restarting the stack by hand.
 - **Clearer indication when filters are applied** *(low priority — current badge indicator judged adequate for now)* — the Filters button already shows a count badge for groups/source platform/participant, but media type and a non-default date range give no visual signal outside their own controls. Worth a more visible summary (e.g. a chip row of active filters) so it's obvious at a glance the table isn't showing the full unfiltered window.
-- **Advanced filter with operators** — a filter input that takes expressions like `mos < 3`, `jitter > 50`, `duration > 300`, rather than only the fixed set of dropdown/text filters in the Filters popover. Needs a small expression grammar (field, operator, value) parsed client- or server-side and translated into the existing `GET /calls` query, plus deciding which fields are queryable this way (`qos.*`, `durationSeconds`, `callSource.timeInIvrSeconds`/`timeInQueueSeconds` are the obvious candidates).
 
 Done:
 
@@ -219,5 +220,9 @@ Done:
 - ~~Label participants in the Call trace~~ — each `ParticipantCard` now shows its `participantId` as a small tag, so trace events referencing `p1`/`p2`/etc. are identifiable at a glance.
 - ~~Show participant username alongside display name~~ — when a participant has both, the card now reads `Display Name (username)` instead of the username disappearing once a display name is present.
 - ~~Export button on the Audit log viewer~~ — the same CSV/JSON export pattern as the records table, pulling every entry matching the current filters (not just the visible page).
+- ~~User accounts & scoped access~~ — session-cookie login is always required; each user has `admin`/`viewer` role and optional `allowedGroups`/`allowedSourcePlatformIds` scoping enforced server-side. See [Authentication & scoped access](#authentication--scoped-access).
+- ~~A proper config/settings UI~~ — the **⋯** header menu now has real admin panels: **Users** (create/edit/delete, role/scope/password reset), **API keys** (self-service, per-user), and **Audit log** (paginated/filterable/exportable viewer). Rotating the shared `INGEST_API_KEY`/`ADMIN_API_KEY` still requires editing `.env` and restarting — those are unchanged, machine-facing secrets that per-user API keys are meant to make largely unnecessary rather than replace outright.
+- ~~Advanced filter with operators~~ — a new **Advanced** field in the Filters popover accepts comma-separated numeric conditions (`mos < 3, jitter > 50`) against `qos.*`, `durationSeconds`, and `callSource.timeInIvrSeconds`/`timeInQueueSeconds`, translated server-side into parameterized SQL against a fixed field allowlist (never user-supplied SQL).
+- ~~Transcription support~~ — synced the vendored schema and example scenarios with an upstream addition to the standard (`transcription`/`TranscriptionInfo` on `CallRecord`), added ingest validation, added a **Transcription** section to the detail drawer (status, method, provider, language, confidence, word count, a PII-redaction badge, download link) mirroring the existing Recording section, and the seeded example scenarios and `npm run seed:demo` generator both now include realistic transcription data. See [Note on the standard](#note-on-the-standard).
 
 Licensed Apache 2.0, matching the standard.
