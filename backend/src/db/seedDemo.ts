@@ -445,7 +445,12 @@ function makeIvrOnly(): CallRecordInput {
     agentParticipant("p2", group, agent),
   ];
   r.events = [
-    { eventTime: iso(start), eventType: "ivr_entry", participantId: "ivr1" },
+    {
+      eventTime: iso(start),
+      eventType: "ivr_entry",
+      participantId: "ivr1",
+      metadata: { dnis: pick(HUNT_NUMBERS) },
+    },
     {
       eventTime: iso(new Date(start.getTime() + ivrTime * 1000)),
       eventType: "ivr_exit",
@@ -473,9 +478,20 @@ function makeQueueOnly(): CallRecordInput {
     { participantId: "q1", role: "queue", extension: queueInfo, group },
     agentParticipant("p2", group, agent),
   ];
+  const queuePosition = randInt(2, 8);
   r.events = [
-    { eventTime: iso(start), eventType: "queue_entry", participantId: "q1" },
-    { eventTime: iso(new Date(start.getTime() + queueTime * 1000)), eventType: "queue_exit", participantId: "q1" },
+    {
+      eventTime: iso(start),
+      eventType: "queue_entry",
+      participantId: "q1",
+      metadata: { queuePosition },
+    },
+    {
+      eventTime: iso(new Date(start.getTime() + queueTime * 1000)),
+      eventType: "queue_exit",
+      participantId: "q1",
+      metadata: { queuePosition: 1 },
+    },
     { eventTime: iso(new Date(start.getTime() + (queueTime + 2) * 1000)), eventType: "connected" },
     { eventTime: iso(new Date(start.getTime() + (queueTime + talk) * 1000)), eventType: "disconnected" },
   ];
@@ -505,11 +521,32 @@ function makeIvrAndQueue(): CallRecordInput {
   let t = start.getTime();
   const ivrExitT = t + ivrTime * 1000;
   const queueExitT = ivrExitT + queueTime * 1000;
+  const queuePosition = randInt(2, 8);
   r.events = [
-    { eventTime: iso(new Date(t)), eventType: "ivr_entry", participantId: "ivr1" },
-    { eventTime: iso(new Date(ivrExitT)), eventType: "ivr_exit", participantId: "ivr1" },
-    { eventTime: iso(new Date(ivrExitT)), eventType: "queue_entry", participantId: "q1" },
-    { eventTime: iso(new Date(queueExitT)), eventType: "queue_exit", participantId: "q1" },
+    {
+      eventTime: iso(new Date(t)),
+      eventType: "ivr_entry",
+      participantId: "ivr1",
+      metadata: { dnis: pick(HUNT_NUMBERS) },
+    },
+    {
+      eventTime: iso(new Date(ivrExitT)),
+      eventType: "ivr_exit",
+      participantId: "ivr1",
+      metadata: { selectedOption: randInt(1, 4) },
+    },
+    {
+      eventTime: iso(new Date(ivrExitT)),
+      eventType: "queue_entry",
+      participantId: "q1",
+      metadata: { queuePosition },
+    },
+    {
+      eventTime: iso(new Date(queueExitT)),
+      eventType: "queue_exit",
+      participantId: "q1",
+      metadata: { queuePosition: 1 },
+    },
     { eventTime: iso(new Date(queueExitT)), eventType: "connected" },
     { eventTime: iso(new Date(start.getTime() + (ivrTime + queueTime + talk) * 1000)), eventType: "disconnected" },
   ];
@@ -533,7 +570,12 @@ function makeAbandoned(): CallRecordInput {
     ];
     r.callEndTime = iso(new Date(start.getTime() + ivrTime * 1000));
     r.events = [
-      { eventTime: iso(start), eventType: "ivr_entry", participantId: "ivr1" },
+      {
+        eventTime: iso(start),
+        eventType: "ivr_entry",
+        participantId: "ivr1",
+        metadata: { dnis: pick(HUNT_NUMBERS) },
+      },
       { eventTime: r.callEndTime, eventType: "disconnected", participantId: "p1", detail: "Caller hung up during IVR" },
     ];
   } else {
@@ -546,7 +588,12 @@ function makeAbandoned(): CallRecordInput {
     ];
     r.callEndTime = iso(new Date(start.getTime() + queueTime * 1000));
     r.events = [
-      { eventTime: iso(start), eventType: "queue_entry", participantId: "q1" },
+      {
+        eventTime: iso(start),
+        eventType: "queue_entry",
+        participantId: "q1",
+        metadata: { queuePosition: randInt(2, 10) },
+      },
       { eventTime: r.callEndTime, eventType: "disconnected", participantId: "p1", detail: "Caller abandoned in queue" },
     ];
   }

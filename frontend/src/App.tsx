@@ -359,6 +359,8 @@ export default function App() {
   const [queue, setQueue] = useState("");
   const [ivr, setIvr] = useState("");
   const [advanced, setAdvanced] = useState("");
+  const [callIdQuery, setCallIdQuery] = useState("");
+  const [callIdError, setCallIdError] = useState<string | null>(null);
 
   const [records, setRecords] = useState<CallRecord[]>([]);
   const [pagination, setPagination] = useState<Pagination | null>(null);
@@ -563,6 +565,28 @@ export default function App() {
     }
   };
 
+  // Jumps straight to a known call/interaction ID, bypassing the current date
+  // range and filters entirely (GET /calls/{callId} is an exact lookup, not a
+  // filtered list) — the errors here go to their own inline slot rather than
+  // the page-level API error banner, since "not found" isn't an API outage.
+  // Returns whether the lookup succeeded, so callers (the Filters popover)
+  // can close themselves on success but stay open on failure so the inline
+  // error is actually visible.
+  const lookupCallId = async (): Promise<boolean> => {
+    const id = callIdQuery.trim();
+    if (!id) return false;
+    setCallIdError(null);
+    try {
+      const record = await api.getCall(id);
+      selectRecord(record);
+      setCallIdQuery("");
+      return true;
+    } catch (e: any) {
+      setCallIdError(e.message ?? `Couldn't find ${id}`);
+      return false;
+    }
+  };
+
   // Opening a record fresh from the table starts a new trail — any earlier
   // drill-across history no longer applies to a different starting point.
   const selectRecord = (r: CallRecord) => {
@@ -690,6 +714,8 @@ export default function App() {
           queue={queue}
           ivr={ivr}
           advanced={advanced}
+          callIdQuery={callIdQuery}
+          callIdError={callIdError}
           onStart={changeStartManually}
           onEnd={changeEndManually}
           onPresetChange={changeDatePreset}
@@ -700,6 +726,11 @@ export default function App() {
           onQueue={setQueue}
           onIvr={setIvr}
           onAdvanced={setAdvanced}
+          onCallIdQueryChange={(v) => {
+            setCallIdQuery(v);
+            setCallIdError(null);
+          }}
+          onLookupCallId={lookupCallId}
           onApply={applyFilters}
           onClear={clearFilters}
           showExport={!!pagination && pagination.totalRecords > 0}
@@ -2111,6 +2142,8 @@ function FilterBar(props: {
   queue: string;
   ivr: string;
   advanced: string;
+  callIdQuery: string;
+  callIdError: string | null;
   onStart: (v: string) => void;
   onEnd: (v: string) => void;
   onPresetChange: (v: string) => void;
@@ -2121,6 +2154,8 @@ function FilterBar(props: {
   onQueue: (v: string) => void;
   onIvr: (v: string) => void;
   onAdvanced: (v: string) => void;
+  onCallIdQueryChange: (v: string) => void;
+  onLookupCallId: () => Promise<boolean>;
   onApply: () => void;
   onClear: () => void;
   showExport: boolean;
@@ -2301,6 +2336,46 @@ function FilterBar(props: {
                 gap: 12,
               }}
             >
+              <div style={{ paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
+                <label style={labelStyle}>Call ID (jump to record)</label>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    type="text"
+                    placeholder="Jump to a known call ID"
+                    value={props.callIdQuery}
+                    onChange={(e) => props.onCallIdQueryChange(e.target.value)}
+                    onKeyDown={async (e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (await props.onLookupCallId()) setShowMore(false);
+                      }
+                    }}
+                    style={{ ...inputStyle, width: "100%" }}
+                  />
+                  <button
+                    onClick={async () => {
+                      if (await props.onLookupCallId()) setShowMore(false);
+                    }}
+                    disabled={!props.callIdQuery.trim()}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 8,
+                      border: `1px solid ${C.border}`,
+                      background: C.surface,
+                      color: C.ink,
+                      fontSize: 13,
+                      fontWeight: 650,
+                      cursor: props.callIdQuery.trim() ? "pointer" : "default",
+                      opacity: props.callIdQuery.trim() ? 1 : 0.5,
+                    }}
+                  >
+                    Open
+                  </button>
+                </div>
+                {props.callIdError && (
+                  <div style={{ fontSize: 11, color: C.rose, marginTop: 4 }}>{props.callIdError}</div>
+                )}
+              </div>
               <div>
                 <label style={labelStyle}>Groups (comma-separated)</label>
                 <input
@@ -4370,6 +4445,12 @@ function DetailDrawer({
               <Field label="End">{fmt(record.callEndTime)}</Field>
               <Field label="Duration">{fmtDur(record.durationSeconds)}</Field>
               <Field label="Last update">{fmt(record.lastUpdateTime)}</Field>
+              {record.interactionStartTime && record.interactionStartTime !== record.callStartTime && (
+                <Field label="Interaction start">{fmt(record.interactionStartTime)}</Field>
+              )}
+              {record.interactionEndTime && record.interactionEndTime !== record.callEndTime && (
+                <Field label="Interaction end">{fmt(record.interactionEndTime)}</Field>
+              )}
             </div>
           </Section>
 
@@ -4856,7 +4937,45 @@ function deriveTimelineRows(record: CallRecord): TimelineRow[] {
   return rows.filter((r) => r.segments.length > 0);
 }
 
+// Small key/value popover for an event's raw `metadata` — DTMF digit + IVR
+// menu on function_key_press, queuePosition on queue_entry/exit, transfer
+// reason, selected IVR option, etc. Shape is event-type-specific and not
+// worth hand-rolling fields for, so this just lists whatever keys are there.
+function EventMetadataPopover({ metadata, onClose }: { metadata: Record<string, unknown>; onClose: () => void }) {
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 9 }} />
+      <div
+        style={{
+          position: "absolute",
+          top: "calc(100% + 4px)",
+          left: 0,
+          zIndex: 10,
+          minWidth: 180,
+          maxWidth: 320,
+          background: C.ink,
+          color: "#fff",
+          borderRadius: 8,
+          padding: "8px 10px",
+          boxShadow: "0 14px 34px rgba(15,22,32,0.28)",
+          fontSize: 11.5,
+        }}
+      >
+        {Object.entries(metadata).map(([k, v]) => (
+          <div key={k} style={{ display: "flex", gap: 8, padding: "2px 0" }}>
+            <span style={{ opacity: 0.7, fontFamily: MONO }}>{k}</span>
+            <span style={{ marginLeft: "auto", fontFamily: MONO, textAlign: "right" }}>
+              {typeof v === "string" ? v : JSON.stringify(v)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function EventTrace({ events }: { events: CallEvent[] }) {
+  const [openMeta, setOpenMeta] = useState<number | null>(null);
   const sorted = [...events].sort(
     (a, b) => new Date(a.eventTime).getTime() - new Date(b.eventTime).getTime()
   );
@@ -4910,6 +5029,32 @@ function EventTrace({ events }: { events: CallEvent[] }) {
                 <span style={{ fontFamily: MONO, fontSize: 11.5, color: C.textMuted }}>
                   {fmtTimeOnly(ev.eventTime)} · {rel}
                 </span>
+                {ev.metadata && Object.keys(ev.metadata).length > 0 && (
+                  <span style={{ position: "relative" }}>
+                    <button
+                      onClick={() => setOpenMeta(openMeta === i ? null : i)}
+                      title="Show event metadata"
+                      style={{
+                        border: `1px solid ${C.border}`,
+                        background: openMeta === i ? C.surfaceAlt : "transparent",
+                        color: C.textMuted,
+                        borderRadius: 999,
+                        width: 16,
+                        height: 16,
+                        lineHeight: 1,
+                        fontSize: 10.5,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        padding: 0,
+                      }}
+                    >
+                      i
+                    </button>
+                    {openMeta === i && (
+                      <EventMetadataPopover metadata={ev.metadata} onClose={() => setOpenMeta(null)} />
+                    )}
+                  </span>
+                )}
               </div>
               {(ev.detail || ev.participantId || ev.targetParticipantId) && (
                 <div style={{ fontSize: 12.5, color: C.textMid, marginTop: 2 }}>
@@ -5073,6 +5218,15 @@ function InteractionTimelineModal({ record, onClose }: { record: CallRecord; onC
             <div style={{ fontSize: 12.5, color: C.textMuted, marginTop: 2, fontFamily: MONO }}>
               {record.callId}
             </div>
+            {record.interactionStartTime &&
+              record.interactionEndTime &&
+              (record.interactionStartTime !== record.callStartTime ||
+                record.interactionEndTime !== record.callEndTime) && (
+                <div style={{ fontSize: 11.5, color: C.textMuted, marginTop: 4 }}>
+                  This leg is part of a longer interaction: {fmt(record.interactionStartTime)} –{" "}
+                  {fmt(record.interactionEndTime)}
+                </div>
+              )}
           </div>
           <button
             onClick={onClose}
