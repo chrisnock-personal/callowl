@@ -4258,6 +4258,7 @@ function DetailDrawer({
   drillError: string | null;
 }) {
   const st = stateStyle(record.callState);
+  const [showTimeline, setShowTimeline] = useState(false);
   const handleExport = (format: "csv" | "json") => {
     if (format === "csv") {
       downloadBlob(`cdr-${record.callId}.csv`, toCsv([record]), "text/csv;charset=utf-8");
@@ -4407,7 +4408,30 @@ function DetailDrawer({
           </Section>
 
           {record.events && record.events.length > 0 && (
-            <Section title={`Call trace · ${record.events.length} events`}>
+            <Section
+              title={`Call trace · ${record.events.length} events`}
+              action={
+                <button
+                  onClick={() => setShowTimeline(true)}
+                  title="Open interaction timeline"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    border: `1px solid ${C.border}`,
+                    background: C.surface,
+                    color: C.textMid,
+                    borderRadius: 7,
+                    padding: "4px 9px",
+                    fontSize: 11.5,
+                    fontWeight: 650,
+                    cursor: "pointer",
+                  }}
+                >
+                  ⤢ Timeline
+                </button>
+              }
+            >
               <EventTrace events={record.events} />
             </Section>
           )}
@@ -4558,11 +4582,22 @@ function DetailDrawer({
           )}
         </div>
       </div>
+      {showTimeline && (
+        <InteractionTimelineModal record={record} onClose={() => setShowTimeline(false)} />
+      )}
     </div>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  action,
+  children,
+}: {
+  title: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <section
       style={{
@@ -4572,18 +4607,29 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         padding: "14px 16px",
       }}
     >
-      <h3
+      <div
         style={{
-          margin: "0 0 12px",
-          fontSize: 12,
-          letterSpacing: 0.5,
-          textTransform: "uppercase",
-          color: C.textMid,
-          fontWeight: 750,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          marginBottom: 12,
         }}
       >
-        {title}
-      </h3>
+        <h3
+          style={{
+            margin: 0,
+            fontSize: 12,
+            letterSpacing: 0.5,
+            textTransform: "uppercase",
+            color: C.textMid,
+            fontWeight: 750,
+          }}
+        >
+          {title}
+        </h3>
+        {action}
+      </div>
       {children}
     </section>
   );
@@ -4665,6 +4711,151 @@ function ParticipantCard({ p }: { p: Participant }) {
 }
 
 // ─── Signature: the call-event trace timeline ─────────────────────────────────
+// ─── Interaction timeline (swimlane) ────────────────────────────────────────
+// One row per participant, colored segments show their state over a shared
+// wall-clock axis. Segment color is a small reserved status vocabulary (not
+// per-row categorical — the row already conveys identity), reusing this app's
+// existing hues where the meaning already matches (eventStyle() above already
+// colors connected→teal, hold→violet).
+type SegmentKind = "waiting" | "active" | "hold" | "wrapup";
+
+interface TimelineSegment {
+  kind: SegmentKind;
+  startMs: number;
+  endMs: number;
+}
+
+interface TimelineRow {
+  participant: Participant;
+  segments: TimelineSegment[];
+}
+
+const SEGMENT_STYLE: Record<SegmentKind, { color: string; label: string }> = {
+  waiting: { color: C.amber, label: "Waiting" },
+  active: { color: C.teal, label: "Active" },
+  hold: { color: C.violet, label: "Hold" },
+  wrapup: { color: C.accent, label: "Wrap-up" },
+};
+
+function findEvent(
+  pEvents: CallEvent[],
+  allEvents: CallEvent[],
+  type: string
+): CallEvent | undefined {
+  return pEvents.find((e) => e.eventType === type) ?? allEvents.find((e) => e.eventType === type);
+}
+
+// Carves [start, end] into active/hold segments using any hold/resume events
+// scoped to this participant inside that window; one active segment if none.
+function splitHold(pEvents: CallEvent[], start: number, end: number): TimelineSegment[] {
+  const toggles = pEvents
+    .filter((e) => e.eventType === "hold" || e.eventType === "resume")
+    .map((e) => ({ type: e.eventType, t: new Date(e.eventTime).getTime() }))
+    .filter((e) => e.t > start && e.t < end)
+    .sort((a, b) => a.t - b.t);
+
+  if (toggles.length === 0) return [{ kind: "active", startMs: start, endMs: end }];
+
+  const segments: TimelineSegment[] = [];
+  let cursor = start;
+  let kind: SegmentKind = "active";
+  for (const t of toggles) {
+    segments.push({ kind, startMs: cursor, endMs: t.t });
+    cursor = t.t;
+    kind = t.type === "hold" ? "hold" : "active";
+  }
+  segments.push({ kind, startMs: cursor, endMs: end });
+  return segments;
+}
+
+/**
+ * Derives per-participant timeline segments from whatever level of detail a
+ * record actually has — explicit joinTime/leaveTime (conference calls),
+ * participant-scoped events (ringing/connected/hold/disconnected), IVR/queue
+ * entry-exit events (falling back to callSource's duration fields), or — for
+ * the sparsest records — one honest "active" span covering the whole call.
+ */
+function deriveTimelineRows(record: CallRecord): TimelineRow[] {
+  const events = record.events ?? [];
+  const callStart = new Date(record.callStartTime).getTime();
+  const callEnd = record.callEndTime
+    ? new Date(record.callEndTime).getTime()
+    : record.lastUpdateTime
+    ? new Date(record.lastUpdateTime).getTime()
+    : callStart;
+
+  const rows: TimelineRow[] = record.participants.map((p) => {
+    const pEvents = events.filter((e) => e.participantId === p.participantId);
+    const segments: TimelineSegment[] = [];
+
+    if (p.role === "ivr" || p.role === "queue") {
+      const entryType = p.role === "ivr" ? "ivr_entry" : "queue_entry";
+      const exitType = p.role === "ivr" ? "ivr_exit" : "queue_exit";
+      const entry = findEvent(pEvents, events, entryType);
+      const exit = findEvent(pEvents, events, exitType);
+      if (entry) {
+        const s = new Date(entry.eventTime).getTime();
+        const e = exit ? new Date(exit.eventTime).getTime() : s;
+        segments.push({ kind: "waiting", startMs: s, endMs: Math.max(e, s) });
+      } else {
+        const dur =
+          p.role === "ivr" ? record.callSource?.timeInIvrSeconds : record.callSource?.timeInQueueSeconds;
+        if (dur != null) {
+          segments.push({ kind: "waiting", startMs: callStart, endMs: callStart + dur * 1000 });
+        }
+      }
+    } else if (p.joinTime) {
+      const s = new Date(p.joinTime).getTime();
+      const e = p.leaveTime ? new Date(p.leaveTime).getTime() : callEnd;
+      segments.push(...splitHold(pEvents, s, e));
+    } else {
+      const ringing = findEvent(pEvents, [], "ringing"); // ringing is always participant-targeted when present
+      const connected = findEvent(pEvents, events, "connected");
+      const disconnect = findEvent(pEvents, events, "disconnected");
+
+      if (ringing || connected) {
+        const ringS = ringing ? new Date(ringing.eventTime).getTime() : null;
+        const connS = connected ? new Date(connected.eventTime).getTime() : ringS ?? callStart;
+        const endS = disconnect ? new Date(disconnect.eventTime).getTime() : callEnd;
+        if (ringS != null && ringS < connS) {
+          segments.push({ kind: "waiting", startMs: ringS, endMs: connS });
+        } else if (ringS == null && p.role === "caller" && connS > callStart) {
+          // The caller dialed in at call start and was live through any IVR/queue
+          // routing before reaching the agent — show that as presence, not a gap.
+          segments.push({ kind: "waiting", startMs: callStart, endMs: connS });
+        }
+        segments.push(...splitHold(pEvents, connS, Math.max(connS, endS)));
+      } else {
+        segments.push({ kind: "active", startMs: callStart, endMs: Math.max(callStart, callEnd) });
+      }
+    }
+
+    return { participant: p, segments };
+  });
+
+  // Wrap-up tail belongs to whoever handled the interaction (agent, transfer
+  // source/target, barge-in supervisor, ...), never the dialing customer —
+  // prefer the first non-caller row, falling back to the old first-row pick
+  // only if every row is somehow "caller" (so the tail still renders somewhere
+  // rather than being silently dropped).
+  if (record.wrapUpInfo?.wrapUpDurationSeconds != null) {
+    const isEligible = (r: TimelineRow) =>
+      r.participant.role !== "ivr" && r.participant.role !== "queue" && r.segments.length > 0;
+    const target =
+      rows.find((r) => isEligible(r) && r.participant.role !== "caller") ?? rows.find(isEligible);
+    if (target) {
+      const lastEnd = Math.max(...target.segments.map((s) => s.endMs));
+      target.segments.push({
+        kind: "wrapup",
+        startMs: lastEnd,
+        endMs: lastEnd + record.wrapUpInfo.wrapUpDurationSeconds * 1000,
+      });
+    }
+  }
+
+  return rows.filter((r) => r.segments.length > 0);
+}
+
 function EventTrace({ events }: { events: CallEvent[] }) {
   const sorted = [...events].sort(
     (a, b) => new Date(a.eventTime).getTime() - new Date(b.eventTime).getTime()
@@ -4736,6 +4927,298 @@ function EventTrace({ events }: { events: CallEvent[] }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// Same dark-tooltip pattern already used in TrendBarChart, applied to a
+// segment instead of a bar.
+function TimelineTooltip({ label, kind, startMs, endMs }: { label: string; kind: SegmentKind; startMs: number; endMs: number }) {
+  const st = SEGMENT_STYLE[kind];
+  return (
+    <div
+      style={{
+        position: "absolute",
+        bottom: "calc(100% + 8px)",
+        left: "50%",
+        transform: "translateX(-50%)",
+        background: C.ink,
+        color: "#fff",
+        fontSize: 11.5,
+        padding: "6px 10px",
+        borderRadius: 6,
+        whiteSpace: "nowrap",
+        zIndex: 6,
+        pointerEvents: "none",
+      }}
+    >
+      <div>
+        <strong>{st.label}</strong> <span style={{ opacity: 0.85 }}>· {label}</span>
+      </div>
+      <div style={{ fontFamily: MONO, opacity: 0.85, marginTop: 2 }}>
+        {fmtTimeOnly(new Date(startMs).toISOString())} – {fmtTimeOnly(new Date(endMs).toISOString())} (
+        {fmtDur((endMs - startMs) / 1000)})
+      </div>
+    </div>
+  );
+}
+
+function InteractionTimelineModal({ record, onClose }: { record: CallRecord; onClose: () => void }) {
+  const [hover, setHover] = useState<{ row: number; seg: number } | null>(null);
+  const rows = deriveTimelineRows(record);
+
+  if (rows.length === 0) {
+    return (
+      <div
+        // Nested inside DetailDrawer's own click-to-close overlay — stop
+        // propagation here too, or clicking this backdrop would cascade into
+        // closing the drawer underneath it as well.
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(15,22,32,0.38)",
+          zIndex: 50,
+          display: "grid",
+          placeItems: "center",
+          padding: 20,
+        }}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{ background: C.surface, borderRadius: 14, padding: 24, maxWidth: 360 }}
+        >
+          <div style={{ fontSize: 13, color: C.textMid }}>
+            Not enough timing detail on this record to draw a timeline.
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              marginTop: 14,
+              padding: "8px 14px",
+              borderRadius: 8,
+              border: "none",
+              background: C.ink,
+              color: "#fff",
+              fontSize: 13,
+              fontWeight: 650,
+              cursor: "pointer",
+            }}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const allMs = rows.flatMap((r) => r.segments.flatMap((s) => [s.startMs, s.endMs]));
+  const domainMin = Math.min(...allMs);
+  const domainMax = Math.max(domainMin + 1000, Math.max(...allMs));
+  const domainSpan = domainMax - domainMin;
+
+  const pct = (ms: number) => ((ms - domainMin) / domainSpan) * 100;
+
+  // 5 evenly-spaced ticks across the domain.
+  const tickCount = 5;
+  const ticks = Array.from({ length: tickCount }, (_, i) => domainMin + (domainSpan * i) / (tickCount - 1));
+
+  const labelFor = (p: Participant) => p.displayName ?? p.userId ?? p.extension;
+
+  return (
+    <div
+      // Nested inside DetailDrawer's own click-to-close overlay — stop
+      // propagation here too, or clicking this backdrop would cascade into
+      // closing the drawer underneath it as well.
+      onClick={(e) => {
+        e.stopPropagation();
+        onClose();
+      }}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,22,32,0.38)",
+        zIndex: 50,
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(1100px, 100%)",
+          maxHeight: "min(760px, 100%)",
+          display: "flex",
+          flexDirection: "column",
+          background: C.surface,
+          borderRadius: 14,
+          overflow: "hidden",
+          boxShadow: "0 24px 60px rgba(15,22,32,0.3)",
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: `1px solid ${C.border}`,
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Interaction timeline</div>
+            <div style={{ fontSize: 12.5, color: C.textMuted, marginTop: 2, fontFamily: MONO }}>
+              {record.callId}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              marginLeft: "auto",
+              border: "none",
+              background: "transparent",
+              fontSize: 22,
+              cursor: "pointer",
+              color: C.textMuted,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        <div style={{ padding: "16px 20px", overflow: "auto", flex: 1 }}>
+          {/* Legend — identity is never color-only. */}
+          <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
+            {(Object.keys(SEGMENT_STYLE) as SegmentKind[]).map((k) => (
+              <div key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                <span
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 3,
+                    background: SEGMENT_STYLE[k].color,
+                  }}
+                />
+                <span style={{ color: C.textMid }}>{SEGMENT_STYLE[k].label}</span>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ minWidth: 640 }}>
+            {rows.map((row, ri) => (
+              <div
+                key={row.participant.participantId}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  borderTop: ri === 0 ? `1px solid ${C.border}` : "none",
+                  borderBottom: `1px solid ${C.border}`,
+                  padding: "8px 0",
+                }}
+              >
+                <div style={{ width: 180, flexShrink: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <Pill fg={C.accentDeep} bg={C.accentSoft}>
+                      {row.participant.role.replace(/_/g, " ")}
+                    </Pill>
+                  </div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, marginTop: 4 }}>
+                    {labelFor(row.participant)}
+                  </div>
+                  <div style={{ fontSize: 11, color: C.textMuted, fontFamily: MONO }}>
+                    {mediaGlyph[record.mediaType]} {record.mediaType.replace(/_/g, " ")}
+                  </div>
+                </div>
+                <div style={{ flex: 1, position: "relative", height: 28 }}>
+                  {row.segments.map((seg, si) => {
+                    const left = pct(seg.startMs);
+                    const width = Math.max(pct(seg.endMs) - left, 0.5);
+                    const isHovered = hover?.row === ri && hover?.seg === si;
+                    const showLabel = width >= 8; // ~8% of track width clears a short label comfortably
+                    return (
+                      <div
+                        key={si}
+                        tabIndex={0}
+                        onMouseEnter={() => setHover({ row: ri, seg: si })}
+                        onMouseLeave={() => setHover((v) => (v?.row === ri && v?.seg === si ? null : v))}
+                        onFocus={() => setHover({ row: ri, seg: si })}
+                        onBlur={() => setHover((v) => (v?.row === ri && v?.seg === si ? null : v))}
+                        style={{
+                          position: "absolute",
+                          left: `${left}%`,
+                          width: `${width}%`,
+                          top: 2,
+                          height: 24,
+                          background: SEGMENT_STYLE[seg.kind].color,
+                          borderRadius: 4,
+                          outline: isHovered ? `2px solid ${C.ink}` : "none",
+                          outlineOffset: 1,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          overflow: "visible",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {showLabel && (
+                          <span
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 650,
+                              color: "#fff",
+                              padding: "0 6px",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {SEGMENT_STYLE[seg.kind].label}
+                          </span>
+                        )}
+                        {isHovered && (
+                          <TimelineTooltip
+                            label={labelFor(row.participant)}
+                            kind={seg.kind}
+                            startMs={seg.startMs}
+                            endMs={seg.endMs}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+
+            {/* Shared time axis */}
+            <div style={{ display: "flex", position: "relative", height: 20, marginTop: 6 }}>
+              <div style={{ width: 180, flexShrink: 0 }} />
+              <div style={{ flex: 1, position: "relative" }}>
+                {ticks.map((t, i) => (
+                  <span
+                    key={i}
+                    style={{
+                      position: "absolute",
+                      left: `${pct(t)}%`,
+                      transform:
+                        i === 0 ? "translateX(0)" : i === ticks.length - 1 ? "translateX(-100%)" : "translateX(-50%)",
+                      fontSize: 11,
+                      color: C.textMuted,
+                      fontFamily: MONO,
+                    }}
+                  >
+                    {fmtTimeOnly(new Date(t).toISOString())}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
