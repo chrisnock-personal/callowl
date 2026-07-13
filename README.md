@@ -43,6 +43,7 @@ Base path: `/api/cdr/v1`. Interactive docs (Swagger UI) at `/api/cdr/v1/docs`.
 | `GET` | `/statistics/summary` | Aggregate stats for a window |
 | `GET` | `/statistics/top-talkers` | **Platform extension** — participants ranked by call count/talk time for a window |
 | `GET` | `/statistics/throughput` | **Platform extension** — call volume bucketed by hour or day over a window |
+| `GET` | `/statistics/throughput/by-outcome` | **Platform extension** — call volume bucketed by hour or day, split into answered vs. unanswered counts |
 | `GET` | `/statistics/by-platform` | **Platform extension** — call counts grouped by `sourcePlatformId` |
 | `GET` | `/statistics/handle-time` | **Platform extension** — average call duration bucketed by hour or day |
 | `GET` | `/statistics/handle-time/by-agent` | **Platform extension** — agents ranked by average handle time, longest first |
