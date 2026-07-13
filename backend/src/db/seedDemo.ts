@@ -20,6 +20,14 @@ import { ingestRecords } from "../services/ingestService";
 
 const NOW = () => new Date();
 const SIX_MONTHS_MS = 182 * 24 * 60 * 60 * 1000;
+// Mutable so seedDemoData()'s caller (e.g. seedDemo12mo.ts) can widen the
+// spread and tag callIds distinctly, without threading params through every
+// one of the ~20 make*() scenario functions below that call randTime()/
+// newCallId() internally. Safe to mutate module-level state here: unlike
+// seedExamples()/seedAdmin(), seedDemoData() is never called during normal
+// server boot (see index.ts) — only from a standalone script invocation.
+let TIME_WINDOW_MS = SIX_MONTHS_MS;
+let ID_PREFIX = "demo5k";
 
 // (sourcePlatformId, sourcePlatformType, tenantId) — matches the standard's
 // own seeded examples so scoping/filtering demos stay consistent.
@@ -133,7 +141,7 @@ const VENDOR_CAMPAIGNS = ["summer-promo-2026", "renewal-outreach", "support-inbo
 let idCounter = 0;
 function newCallId(): string {
   idCounter += 1;
-  return `demo5k-${Date.now().toString(36)}-${idCounter.toString(36)}`;
+  return `${ID_PREFIX}-${Date.now().toString(36)}-${idCounter.toString(36)}`;
 }
 
 function pick<T>(arr: T[]): T {
@@ -153,8 +161,8 @@ function randInt(min: number, max: number): number {
 // matches how real call volume actually distributes, so the throughput chart
 // looks like a real contact center instead of uniform noise.
 function randTime(): Date {
-  const start = NOW().getTime() - SIX_MONTHS_MS;
-  const t = new Date(start + Math.random() * SIX_MONTHS_MS);
+  const start = NOW().getTime() - TIME_WINDOW_MS;
+  const t = new Date(start + Math.random() * TIME_WINDOW_MS);
   if (Math.random() < 0.8) {
     t.setHours(randInt(8, 17), randInt(0, 59), randInt(0, 59), randInt(0, 999));
     if (t.getDay() === 0 || t.getDay() === 6) t.setDate(t.getDate() - (t.getDay() === 0 ? 2 : 1));
@@ -650,20 +658,25 @@ function makeMonitorBarge(): CallRecordInput {
   const r = baseFields(callId, start, duration, {
     scenario: doesBarge ? "Supervisor barge-in — rich demo data" : "Supervisor silent monitor — rich demo data",
   });
+  // Barging in only makes the supervisor a real call participant from that
+  // moment on — before that they're silently monitoring (monitor_start,
+  // below), not "in" the call the way joinTime/the interaction timeline mean
+  // it. Silent-monitor-only records have no such moment, so joinTime staying
+  // at call start is correct there.
+  const bargeAt = doesBarge ? randInt(30, Math.max(31, duration - 30)) : null;
   r.participants = [
     externalParticipant("p1"),
     agentParticipant("p2", group, agent, { handsetInfo: "Desk handset, headset jack 1" }),
     agentParticipant("p3", group, supervisor, {
       role: doesBarge ? "barge_agent" : "monitor_supervisor",
-      joinTime: start,
+      joinTime: bargeAt != null ? new Date(start.getTime() + bargeAt * 1000) : start,
     }),
   ];
   const events: CallRecordInput["events"] = [
     { eventTime: iso(start), eventType: "connected" },
     { eventTime: iso(new Date(start.getTime() + 5000)), eventType: "monitor_start", participantId: "p3" },
   ];
-  if (doesBarge) {
-    const bargeAt = randInt(30, Math.max(31, duration - 30));
+  if (bargeAt != null) {
     events.push({
       eventTime: iso(new Date(start.getTime() + bargeAt * 1000)),
       eventType: "barge_in",
@@ -804,7 +817,10 @@ const PLAN: [() => CallRecordInput, number][] = [
 const MULTI_LEG_PAIRS = 250; // -> 500 records
 const CONSULT_TRIOS = 100; // -> 200 records
 
-export async function seedDemoData(): Promise<void> {
+export async function seedDemoData(opts: { windowMs?: number; idPrefix?: string } = {}): Promise<void> {
+  if (opts.windowMs != null) TIME_WINDOW_MS = opts.windowMs;
+  if (opts.idPrefix != null) ID_PREFIX = opts.idPrefix;
+
   const records: CallRecordInput[] = [];
   for (const [fn, count] of PLAN) {
     for (let i = 0; i < count; i++) records.push(fn());

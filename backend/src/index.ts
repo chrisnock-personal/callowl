@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
+import helmet from "helmet";
 import swaggerUi from "swagger-ui-express";
 import { config } from "./config";
 import { testConnection, closePool } from "./db/pool";
@@ -21,7 +22,21 @@ import authRouter from "./routes/auth";
 const app = express();
 const BASE = config.apiBasePath;
 
+// Requests only ever reach this process through one reverse proxy hop — the
+// frontend nginx container's proxy_pass (see frontend/nginx.conf), and in a
+// public deployment a TLS-terminating proxy in front of that. Without this,
+// req.ip (what the audit log records per request, and what the rate limiters
+// below key on) resolves to the proxy's address for every request instead of
+// the real client's. Bump the number if another hop (e.g. a CDN) is added.
+app.set("trust proxy", 1);
+
 // ─── Middleware ───────────────────────────────────────────────────────────────
+// CSP is left off: swagger-ui-express's bundled UI relies on inline scripts,
+// and a hand-tuned CSP just for /docs isn't worth it for an API-only backend
+// that doesn't render user-controlled HTML anywhere. The rest of helmet's
+// defaults (HSTS, X-Content-Type-Options, X-Frame-Options, hiding
+// X-Powered-By, etc.) still apply.
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: config.corsOrigin }));
 app.use(express.json({ limit: "8mb" })); // batches of CDRs can be large
 app.use(cookieParser());
@@ -48,8 +63,26 @@ const ingestRateLimit = rateLimit({
   },
 });
 
+// Unlike ingest, login has no legitimate high-volume use — keep this tight
+// enough to blunt brute-force/credential-stuffing attempts once this is
+// reachable from the public internet, generous enough that a real user
+// mistyping a password a few times never sees it.
+const loginRateLimit = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: "rate_limited",
+      message: "Too many login attempts — try again later",
+    },
+  },
+});
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.use(`${BASE}/health`, healthRouter);
+app.use(`${BASE}/auth/login`, loginRateLimit);
 app.use(`${BASE}/auth`, authRouter);
 app.use(`${BASE}/statistics`, statisticsRouter);
 app.use(`${BASE}/admin`, adminRouter);

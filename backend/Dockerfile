@@ -40,5 +40,14 @@ COPY --from=build /app/dist ./dist
 COPY src/migrations ./dist/migrations
 COPY src/data ./dist/data
 
+# Runs as root only long enough for docker-entrypoint.sh to fix up the
+# ./backups bind mount's ownership, then drops to the image's built-in
+# non-root `node` user before actually running the app — see that script for
+# why this can't just be a build-time `USER node` + `chown`.
+RUN mkdir -p /app/backups && chown -R node:node /app
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 EXPOSE 3001
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "dist/index.js"]

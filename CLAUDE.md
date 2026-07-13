@@ -77,8 +77,9 @@ console.log(data.examples.length + ' examples OK');
 
 ## One-off scripts
 
-`backend/src/db/` has three standalone runners (`if (require.main === module)`), each also invocable via `npm run <script>`:
+`backend/src/db/` has four standalone runners (`if (require.main === module)`), each also invocable via `npm run <script>`:
 
 - `seed.ts` (`npm run seed`) — the standard's 5 example scenarios, runs automatically on boot if `call_records` is empty.
 - `seedAdmin.ts` — bootstrap admin account, runs automatically on boot if `users` is empty. Not a standalone script.
 - `seedDemo.ts` (`npm run seed:demo`) — 5,000 rich synthetic records over the last 6 months, exercising nearly every schema field. Manual/opt-in only, never runs automatically. Idempotent-safe to re-run (upserts by `callId`), but re-running without clearing old `demo5k-*` rows first just adds another 5,000 on top.
+- `seedDemo12mo.ts` (`npm run seed:demo:12mo`) — same generator as `seedDemo.ts` (it calls `seedDemoData()` with different options, not a copy of the logic), spread over 12 months instead of 6 and tagged `demo12mo-*` instead of `demo5k-*` so the two batches stay independently identifiable/clearable. Still 5,000 records — wider spread, not more volume. If you need a third variant, add its window/prefix in a similarly thin new file rather than duplicating `seedDemo.ts`'s ~20 scenario functions; `TIME_WINDOW_MS`/`ID_PREFIX` are deliberately mutable module state in `seedDemo.ts` for exactly this.

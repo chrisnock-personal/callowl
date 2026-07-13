@@ -4334,6 +4334,7 @@ function DetailDrawer({
 }) {
   const st = stateStyle(record.callState);
   const [showTimeline, setShowTimeline] = useState(false);
+  const [showVendorFields, setShowVendorFields] = useState(false);
   const handleExport = (format: "csv" | "json") => {
     if (format === "csv") {
       downloadBlob(`cdr-${record.callId}.csv`, toCsv([record]), "text/csv;charset=utf-8");
@@ -4661,6 +4662,30 @@ function DetailDrawer({
               </div>
             </Section>
           )}
+
+          {record.vendorSpecificFields && Object.keys(record.vendorSpecificFields).length > 0 && (
+            <Section title="Platform extensions">
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.textMid }}>
+                <span>
+                  {Object.keys(record.vendorSpecificFields).length} field
+                  {Object.keys(record.vendorSpecificFields).length === 1 ? "" : "s"} outside the standard
+                </span>
+                <span style={{ position: "relative" }}>
+                  <InfoButton
+                    active={showVendorFields}
+                    onClick={() => setShowVendorFields((v) => !v)}
+                    title="Show vendor-specific fields"
+                  />
+                  {showVendorFields && (
+                    <KeyValuePopover
+                      entries={Object.entries(record.vendorSpecificFields)}
+                      onClose={() => setShowVendorFields(false)}
+                    />
+                  )}
+                </span>
+              </div>
+            </Section>
+          )}
         </div>
       </div>
       {showTimeline && (
@@ -4717,6 +4742,17 @@ function Section({
 }
 
 function ParticipantCard({ p }: { p: Participant }) {
+  const [showDevice, setShowDevice] = useState(false);
+  // The less-common device fields — deviceId, model, softwareVersion, macAddress,
+  // videoCodec — go in the popup rather than as more inline chips; audioCodec/
+  // ipAddress stay inline below since they're already shown there.
+  const deviceEntries: [string, unknown][] = [];
+  if (p.deviceId) deviceEntries.push(["Device ID", p.deviceId]);
+  if (p.device?.model) deviceEntries.push(["Model", p.device.model]);
+  if (p.device?.softwareVersion) deviceEntries.push(["Software version", p.device.softwareVersion]);
+  if (p.device?.macAddress) deviceEntries.push(["MAC address", p.device.macAddress]);
+  if (p.device?.videoCodec) deviceEntries.push(["Video codec", p.device.videoCodec]);
+
   return (
     <div
       style={{
@@ -4755,6 +4791,14 @@ function ParticipantCard({ p }: { p: Participant }) {
         <span style={{ fontFamily: MONO, fontSize: 12.5, color: C.textMid }}>
           ext {p.extension}
         </span>
+        {deviceEntries.length > 0 && (
+          <span style={{ position: "relative" }}>
+            <InfoButton active={showDevice} onClick={() => setShowDevice((v) => !v)} title="Show device info" />
+            {showDevice && (
+              <KeyValuePopover entries={deviceEntries} onClose={() => setShowDevice(false)} />
+            )}
+          </span>
+        )}
         {p.recordingConfig && (
           <span
             style={{
@@ -4941,7 +4985,10 @@ function deriveTimelineRows(record: CallRecord): TimelineRow[] {
 // menu on function_key_press, queuePosition on queue_entry/exit, transfer
 // reason, selected IVR option, etc. Shape is event-type-specific and not
 // worth hand-rolling fields for, so this just lists whatever keys are there.
-function EventMetadataPopover({ metadata, onClose }: { metadata: Record<string, unknown>; onClose: () => void }) {
+// Generic key/value popover — used for an event's raw `metadata` and for a
+// participant's less-common device fields. Shape is caller-specific and not
+// worth hand-rolling fields for, so this just lists whatever entries it's given.
+function KeyValuePopover({ entries, onClose }: { entries: [string, unknown][]; onClose: () => void }) {
   return (
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 9 }} />
@@ -4961,7 +5008,7 @@ function EventMetadataPopover({ metadata, onClose }: { metadata: Record<string, 
           fontSize: 11.5,
         }}
       >
-        {Object.entries(metadata).map(([k, v]) => (
+        {entries.map(([k, v]) => (
           <div key={k} style={{ display: "flex", gap: 8, padding: "2px 0" }}>
             <span style={{ opacity: 0.7, fontFamily: MONO }}>{k}</span>
             <span style={{ marginLeft: "auto", fontFamily: MONO, textAlign: "right" }}>
@@ -4971,6 +5018,32 @@ function EventMetadataPopover({ metadata, onClose }: { metadata: Record<string, 
         ))}
       </div>
     </>
+  );
+}
+
+// Small round "i" toggle that anchors a KeyValuePopover — shared by the Call
+// trace's event-metadata button and ParticipantCard's device-info button.
+function InfoButton({ active, onClick, title }: { active: boolean; onClick: () => void; title: string }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        border: `1px solid ${C.border}`,
+        background: active ? C.surfaceAlt : "transparent",
+        color: C.textMuted,
+        borderRadius: 999,
+        width: 16,
+        height: 16,
+        lineHeight: 1,
+        fontSize: 10.5,
+        fontWeight: 700,
+        cursor: "pointer",
+        padding: 0,
+      }}
+    >
+      i
+    </button>
   );
 }
 
@@ -5031,27 +5104,13 @@ function EventTrace({ events }: { events: CallEvent[] }) {
                 </span>
                 {ev.metadata && Object.keys(ev.metadata).length > 0 && (
                   <span style={{ position: "relative" }}>
-                    <button
+                    <InfoButton
+                      active={openMeta === i}
                       onClick={() => setOpenMeta(openMeta === i ? null : i)}
                       title="Show event metadata"
-                      style={{
-                        border: `1px solid ${C.border}`,
-                        background: openMeta === i ? C.surfaceAlt : "transparent",
-                        color: C.textMuted,
-                        borderRadius: 999,
-                        width: 16,
-                        height: 16,
-                        lineHeight: 1,
-                        fontSize: 10.5,
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        padding: 0,
-                      }}
-                    >
-                      i
-                    </button>
+                    />
                     {openMeta === i && (
-                      <EventMetadataPopover metadata={ev.metadata} onClose={() => setOpenMeta(null)} />
+                      <KeyValuePopover entries={Object.entries(ev.metadata)} onClose={() => setOpenMeta(null)} />
                     )}
                   </span>
                 )}

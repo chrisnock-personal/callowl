@@ -44,7 +44,11 @@ services:
       PGUSER: "${PGUSER:-opencdr}"
       PGPASSWORD: "${PGPASSWORD:-opencdr_pass}"
       PGSSL: "false"
-      CORS_ORIGIN: "*"
+      # "*" is fine for a local lab; set to your real origin(s) once this is
+      # publicly reachable, as defense in depth (session auth doesn't rely on
+      # CORS for protection — cookies aren't sent cross-origin regardless,
+      # since this isn't configured with credentials: true).
+      CORS_ORIGIN: "${CORS_ORIGIN:-*}"
       SEED_EXAMPLES: "${SEED_EXAMPLES:-true}"
       # Set to require a key on POST /calls/ingest. Leave unset for open ingest.
       INGEST_API_KEY: "${INGEST_API_KEY:-}"

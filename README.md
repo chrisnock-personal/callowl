@@ -21,6 +21,8 @@ On first boot the backend runs migrations and seeds the five example scenarios f
 
 For a fuller demo — enough volume for the Insights charts, drill-across, and advanced filter to actually have something to show — run `npm run seed:demo` from `backend/` (or `podman-compose run --rm backend node dist/db/seedDemo.js` against a running compose stack). It generates 5,000 schema-conformant records spread across the last 6 months: multi-leg transfers, multi-participant conferences, IVR/queue routing, QoS metrics (including a deliberate tail of poor-quality calls), supervisor monitor/barge-in, recording and transcription references (correlated to each other, not every recording gets transcribed), and every other field in the standard (device info, wrap-up notes, vendor-specific fields, participant join/leave/slot/handset detail) — not just the common ones. Every generated record is validated against the schema before ingest. This is a manual, opt-in step (unlike the five standard examples, it doesn't run automatically on boot) — it's meant for demoing or load-testing the dashboard, not a fresh-install default.
 
+Want a full year of history instead (e.g. to exercise the wider Range presets, or show seasonality in the throughput charts)? `npm run seed:demo:12mo` runs the exact same generator spread across the last 12 months rather than 6, tagged with a `demo12mo-` callId prefix instead of `demo5k-` so the two batches stay independently identifiable — still 5,000 records, just spread thinner. Both are additive and safe to run alongside each other.
+
 Services:
 
 - **frontend** — nginx serving the built React app, reverse-proxying `/api` to the backend (host port `8080`)
@@ -119,7 +121,7 @@ Layout:
 ```
 backend/src/
   config/        env config (zod-validated)
-  db/            pg pool, migration runner, example seeder, bootstrap admin seeder, rich demo data generator
+  db/            pg pool, migration runner, example seeder, bootstrap admin seeder, rich demo data generators (6mo + 12mo variants)
   migrations/    sequential SQL (001 table, 002 indexes, 003+ backfills, 005 users/sessions, 006 API keys, 007 audit log)
   schemas/       zod mirror of the standard — the ingest gatekeeper
   services/      ingest, read (list/get), statistics, auth (users/sessions/API keys), audit log, advanced filter parsing
@@ -159,6 +161,33 @@ Routine maintenance beyond backups (autovacuum, index bloat, etc.) is handled by
 
 ---
 
+## Deploying
+
+`.env.example`'s defaults are intentionally open for a local lab (no auth on ingest, no TLS). For anything reachable beyond your own machine, start from `.env.production.example` instead — it documents which values are *required* (`INGEST_API_KEY`, `ADMIN_API_KEY`, a real `PGPASSWORD`, `BOOTSTRAP_ADMIN_PASSWORD`) and which need a TLS-terminating reverse proxy in front before it's safe to flip (`COOKIE_SECURE`).
+
+Already in place regardless of which `.env` you use:
+
+- `helmet` security headers (HSTS, `X-Content-Type-Options`, `X-Frame-Options`, hides `X-Powered-By`, etc.) — CSP is deliberately left off, since Swagger UI's bundled `/docs` relies on inline scripts and a hand-tuned CSP for one page isn't worth it here.
+- Rate limiting on `POST /auth/login` (20 attempts / 15 min per IP), alongside the existing higher-volume limiter on `POST /calls/ingest`.
+- `trust proxy` set for one reverse-proxy hop, so the audit log and both rate limiters resolve the real client IP once a proxy sits in front, instead of the proxy's own address.
+- The backend container runs as a non-root user. `docker-entrypoint.sh` fixes up the `./backups` bind mount's ownership at container start rather than at build time — a build-time `chown` alone isn't enough under rootless Podman's default UID namespace remapping, where the image's `node` user and the host account can both report uid 1000 without actually being the same identity.
+- `CORS_ORIGIN` is configurable (defaults to `*`, fine for a local lab) — pin it to your real origin once deployed, as defense in depth. Session auth doesn't depend on this either way, since cookies aren't sent cross-origin regardless (not configured with `credentials: true`).
+
+Still up to you: TLS itself (Caddy is the easiest option — auto-provisions Let's Encrypt certs; nginx+certbot or a Cloudflare Tunnel work too), and filling in every placeholder in `.env.production.example`.
+
+**`sync.sh`** — rsyncs local source to a remote host (respecting `.gitignore`; never touches the remote's own `.env` or `./backups`, so production secrets and backups are never overwritten by what's, or isn't, on your dev machine) and rebuilds/restarts the `backend`/`frontend` containers there:
+
+```bash
+./sync.sh user@host       # sync + rebuild (--no-cache) + restart
+./sync.sh --sync-only     # sync files only, no rebuild
+./sync.sh --rebuild-only  # rebuild/restart without syncing
+./sync.sh --logs          # tail backend logs after deploy
+```
+
+Set `OPENCDR_REMOTE=user@host` / `OPENCDR_REMOTE_DIR=path` to avoid passing them every time. `db` and `backup` are never touched by a sync — only `backend`/`frontend` get rebuilt, so a redeploy never risks the database.
+
+---
+
 ## Development (without containers)
 
 ```bash
@@ -169,7 +198,7 @@ cd backend && npm install && npm run dev
 cd frontend && npm install && npm run dev
 ```
 
-`npm run migrate` and `npm run seed` in `backend/` run those steps standalone; `npm run seed:demo` runs the rich 5,000-record generator (see [Quick start](#quick-start)).
+`npm run migrate` and `npm run seed` in `backend/` run those steps standalone; `npm run seed:demo` (6 months) and `npm run seed:demo:12mo` (12 months) run the rich 5,000-record generator (see [Quick start](#quick-start)).
 
 ---
 
@@ -183,7 +212,7 @@ The schema marks `callEndTime` as **required** on `CallRecord`, but the same fie
 
 ## Status
 
-A prototype: no TLS, single-node Postgres, statistics computed on the fly. Enough to ingest conforming CDRs, browse them, and demonstrate the standard end to end — not production-hardened.
+A prototype: no TLS baked in (bring your own reverse proxy — see [Deploying](#deploying)), single-node Postgres, statistics computed on the fly. Enough to ingest conforming CDRs, browse them, and demonstrate the standard end to end. A baseline hardening pass is in place (security headers, login rate limiting, non-root containers — see [Deploying](#deploying)), but this hasn't had a full production security audit.
 
 ---
 
@@ -192,13 +221,11 @@ A prototype: no TLS, single-node Postgres, statistics computed on the fly. Enoug
 Not yet implemented — tracked here for now:
 
 - **Clearer indication when filters are applied** *(low priority — current badge indicator judged adequate for now)* — the Filters button already shows a count badge for groups/source platform/participant, but media type and a non-default date range give no visual signal outside their own controls. Worth a more visible summary (e.g. a chip row of active filters) so it's obvious at a glance the table isn't showing the full unfiltered window.
-- **Fix supervisor `joinTime` in the monitor/barge demo scenario** *(minor, found while verifying the interaction timeline)* — `seedDemo.ts`'s barge-in records set the supervisor's `joinTime` to the call start rather than to their actual `barge_in` moment, so they render as present for the whole call instead of just from when they joined.
-- **Search by call/interaction ID** — there's currently no way to jump straight to a known `callId` (e.g. to re-open a specific interaction timeline); `GET /calls` has no `callId`/`parentCallId` filter and the Filters popover has no field for it, so finding a specific record again means re-applying whatever filters narrow it down and eyeballing the table.
-- **Surface event `metadata` in the Call trace / Interaction timeline** *(found while auditing which schema fields the UI doesn't surface)* — `CallEvent.metadata` is validated and stored (DTMF digit + IVR menu on `function_key_press`, `queuePosition` on `queue_entry`/`queue_exit`, transfer `reason`, selected IVR option, etc.) but `EventTrace` only ever renders `detail`/`participantId`/`targetParticipantId`, so it's silently dropped from both the Call trace list and the timeline's hover tooltips. Worth a small expand button/popover per trace entry (and in the timeline tooltip) that reveals the raw metadata for events that have it.
-- **Surface participant device data** *(found in the same schema audit)* — `ParticipantCard` only shows `device.audioCodec`/`device.ipAddress`; `participant.deviceId` and `device.model`/`softwareVersion`/`macAddress`/`videoCodec` are validated and stored but never displayed. Worth exploring a small "device info" popup button on each `ParticipantCard` rather than cramming more inline fields onto the card.
-- **Display `interactionStartTime`/`interactionEndTime`** *(found in the same schema audit)* — the drawer's Timing section only shows the leg-level `callStartTime`/`callEndTime`; the interaction-level span (covering transfer/consult legs) is validated and stored but shown nowhere, including the Interaction Timeline modal, which seems like the more natural home for it.
-- **Surface `vendorSpecificFields`** *(found in the same schema audit)* — validated, stored, and seeded (`campaignId` etc. on ~30% of demo records), but there's no UI for it at all — not even a generic section the way `_scenario` gets its own line. Worth a popup/expand button near the end of the detail drawer that dumps whatever's in the object, since its shape is platform-specific and not worth hand-rolling fields for.
-- **Move Call ID search into the Filters dropdown** *(cleanup — currently its own always-visible field in the filter bar)* — it was added as a standalone input+button next to Media type, but sits oddly alongside the always-visible quick filters since it's a jump-to-record action, not a table filter. Worth relocating into the Filters popover (or another less prominent spot) to declutter the top-level filter bar.
+- **Ingest CDR records from a remote Open-CDR-compatible source** *(new, multi-part feature)* — pull records from another platform's own `GET /calls` API rather than only ever receiving pushed ingest. Auth mechanism is flexible/negotiable at implementation time: either OAuth2 client-credentials with a preconfigured `clientId`/`clientSecret` (the vendored standard's own `securitySchemes.OAuth2` already defines a `clientCredentials` flow against a `tokenUrl`, scoped to `cdr:read`/`cdr:stats`), or a simpler bearer API key (matching this platform's own existing `requireApiKey` pattern) if that proves easier to implement against real remote sources. Likely breaks down into:
+  - **Remote source config** — admin-managed record of a remote source's base URL plus whichever credential shape it needs (`clientId`/`clientSecret`+`tokenUrl`, or a single API key), with secrets handled the same way other machine credentials in this app are (never round-tripped back to the client once saved).
+  - **Auth** — either fetch-and-cache a bearer token (refreshed before expiry) via client-credentials, or attach a static API key — against the remote's `GET /calls`.
+  - **Scheduled/on-demand pull** — a polling job (cron-style, similar to the existing `backup` compose service's loop) that pages through the remote's `GET /calls` for a rolling window and imports new/updated records, tracking a watermark per source so re-polling doesn't reprocess everything.
+  - **Strict validation gate** — every fetched record must pass the exact same `callRecordSchema` gate as pushed ingest before being stored; per the "100% expected JSON results" requirement, a record that doesn't fully conform gets rejected and logged, not coerced or partially stored.
 
 Done:
 
@@ -232,5 +259,11 @@ Done:
 - ~~Advanced filter with operators~~ — a new **Advanced** field in the Filters popover accepts comma-separated numeric conditions (`mos < 3, jitter > 50`) against `qos.*`, `durationSeconds`, and `callSource.timeInIvrSeconds`/`timeInQueueSeconds`, translated server-side into parameterized SQL against a fixed field allowlist (never user-supplied SQL).
 - ~~Transcription support~~ — synced the vendored schema and example scenarios with an upstream addition to the standard (`transcription`/`TranscriptionInfo` on `CallRecord`), added ingest validation, added a **Transcription** section to the detail drawer (status, method, provider, language, confidence, word count, a PII-redaction badge, download link) mirroring the existing Recording section, and the seeded example scenarios and `npm run seed:demo` generator both now include realistic transcription data. See [Note on the standard](#note-on-the-standard).
 - ~~Interaction timeline popup~~ — a **⤢ Timeline** button on the detail drawer's Call trace card opens a Genesys-Cloud-style swimlane view: one row per participant, colored segments (waiting, active, on hold, wrap-up) plotted against a shared time axis, with hover tooltips. Segments are derived client-side from whatever detail a record actually has — explicit `joinTime`/`leaveTime`, participant-scoped events, IVR/queue entry-exit events, or a single honest "active" span for the sparsest records — no new endpoint or stored data needed.
+- ~~Search by call/interaction ID~~ — a **Call ID** field (in the Filters popover) does an exact `GET /calls/{callId}` lookup and opens the record directly, bypassing whatever date range/filters are currently active — a jump-to-record action rather than a table filter.
+- ~~Surface event `metadata` in the Call trace~~ — a small "i" button appears next to Call trace events that carry `metadata` (DTMF digit + IVR menu, queue position, transfer reason, selected IVR option, etc.), popping open a key/value view of the raw data via a new reusable `KeyValuePopover` component.
+- ~~Surface participant device data~~ — a matching "i" button on `ParticipantCard` reveals `deviceId`/`model`/`softwareVersion`/`macAddress`/`videoCodec` when present (reusing the same `KeyValuePopover`); `audioCodec`/`ipAddress` stay as the existing inline chips since they were already visible.
+- ~~Display `interactionStartTime`/`interactionEndTime`~~ — the Timing section and the Interaction Timeline modal header now show the interaction-level span, but only when it actually differs from the leg's own `callStartTime`/`callEndTime`, so single-leg calls don't get redundant duplicate fields.
+- ~~Surface `vendorSpecificFields`~~ — a new "Platform extensions" section at the end of the detail drawer (shown only when non-empty) with an "i" button popping open whatever's in the object, reusing the same `KeyValuePopover`/`InfoButton` components as the event-metadata and device-info buttons above.
+- ~~Fix supervisor `joinTime` in the monitor/barge demo scenario~~ — barge-in records now set the supervisor's `joinTime` to their actual `barge_in` moment instead of the call start, so they render as present only from when they actually joined. Silent-monitor records (no barge-in moment) are unaffected.
 
 Licensed Apache 2.0, matching the standard.
