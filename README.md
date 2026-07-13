@@ -4,7 +4,7 @@ A reference **call-logging platform** for the [Open CDR Standard](./backend/src/
 
 It's the "open call-logging platform for ingesting CDR data" described as future work in the standard, built as a runnable prototype.
 
-Stack and structure deliberately mirror the Aggre/Gator event-aggregator: Node + Express + TypeScript + PostgreSQL on the backend (zod validation, `pg` pool, sequential SQL migrations, Swagger UI), React 18 + Vite on the frontend, deployed via compose.
+Node + Express + TypeScript + PostgreSQL on the backend (zod validation, `pg` pool, sequential SQL migrations, Swagger UI), React 18 + Vite on the frontend, deployed via compose.
 
 ---
 
@@ -234,7 +234,7 @@ Done:
 - ~~Reporting / insights~~ — the dashboard now shows a **calls throughput** chart (hourly/daily, auto-scaled to the window), a **calls by source platform** donut, and a **top talkers** table (call count + talk time, ranked, excluding IVR/queue/voicemail), backed by three new endpoints: `GET /statistics/top-talkers`, `GET /statistics/throughput`, and `GET /statistics/by-platform`.
 - ~~Records-per-page control~~ — a "Rows per page" dropdown (10/25/50/100/250) next to the pager, below the records table.
 - ~~Resizable table columns~~ — drag a column's right edge to resize it; widths persist across reloads (`localStorage`), with a "Reset columns" link to restore defaults.
-- ~~Expanded date-range presets~~ — a **Range** dropdown (last hour / 6 hours / 24 hours / week / 3 months / 6 months / custom) in the filter bar, with true rolling windows (`now - N`) rather than Aggre/Gator's calendar-day-anchored presets, and From/To pickers that stay live and editable in every mode (Aggre/Gator's "custom" option has no date picker actually wired up).
+- ~~Expanded date-range presets~~ — a **Range** dropdown (last hour / 6 hours / 24 hours / week / 3 months / 6 months / custom) in the filter bar, with true rolling windows (`now - N`) rather than calendar-day-anchored presets, and From/To pickers that stay live and editable in every mode.
 - ~~Split top talkers into Internal / External tabs~~ — the top-talkers card now has Internal/External tabs, split on whether the participant carried a `userId` (internal) vs. extension-only (external), backed by a new `scope` param on `GET /statistics/top-talkers`.
 - ~~Agent handle time & queue wait time metrics/graphs~~ — the throughput card gained two more tabs, **Agent handle time** and **Queue wait time**, each with a trend chart and a ranked breakdown (agents/queues, longest first, single-call agents excluded), backed by four new endpoints: `GET /statistics/handle-time`, `GET /statistics/handle-time/by-agent`, `GET /statistics/queue-wait`, and `GET /statistics/queue-wait/by-queue`. Every tab also got an **⤢ Expand** button opening a larger popover view.
 - ~~Split "Calls throughput" and "Calls by source platform" into separate tabs~~ — "Calls by source platform" is now its own tab (4 tabs total on the card) instead of sharing space inside the Calls throughput tab.
