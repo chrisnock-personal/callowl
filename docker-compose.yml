@@ -65,6 +65,10 @@ services:
       COOKIE_SECURE: "${COOKIE_SECURE:-false}"
       # How long audit_log entries are kept (pruned on boot and daily).
       AUDIT_LOG_RETENTION_DAYS: "${AUDIT_LOG_RETENTION_DAYS:-90}"
+      # Only required if a remote source is configured (⋯ menu → Remote
+      # sources) — encrypts that source's own credential at rest.
+      REMOTE_SOURCE_ENC_KEY: "${REMOTE_SOURCE_ENC_KEY:-}"
+      REMOTE_SOURCE_REJECTS_RETENTION_DAYS: "${REMOTE_SOURCE_REJECTS_RETENTION_DAYS:-90}"
     volumes:
       # Read-write: the on-demand backup/restore endpoints write and read here,
       # alongside the scheduled `backup` service. :z (shared label) relabels

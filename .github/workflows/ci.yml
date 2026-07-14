@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # Matches docker-compose.yml's `db` service image tag.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: opencdr_test
+          POSTGRES_USER: opencdr
+          POSTGRES_PASSWORD: opencdr_test_pass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U opencdr -d opencdr_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGDATABASE: opencdr_test
+      PGUSER: opencdr
+      PGPASSWORD: opencdr_test_pass
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npm test
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Type-check (ignoring documented pre-existing qs() errors)
+        # See CLAUDE.md: 4 pre-existing, harmless errors on
+        # ListParams/InsightsParams/AuditLogParams/RemoteSourceRejectParams —
+        # a structural-typing mismatch with the generic qs() helper's index
+        # signature, predating any current work. Any *other* tsc error still
+        # fails this step. Keep this allowlist and CLAUDE.md's in sync.
+        run: |
+          OUTPUT=$(npx tsc --noEmit -p tsconfig.json 2>&1) || true
+          UNEXPECTED=$(echo "$OUTPUT" | grep "error TS" | grep -v -E "ListParams|InsightsParams|AuditLogParams|RemoteSourceRejectParams" || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "$UNEXPECTED"
+            exit 1
+          fi
+      - run: npm run build

@@ -23,6 +23,11 @@ import {
   ManagedUser,
   ApiKeyMeta,
   AuditLogEntry,
+  RemoteSourceMeta,
+  RemoteSourceAuthType,
+  RemoteSourceAuthInput,
+  RemotePollStatus,
+  RemoteSourceReject,
 } from "./api";
 
 // ─── Palette: "signal & routing" ──────────────────────────────────────────────
@@ -111,6 +116,24 @@ const directionGlyph: Record<string, string> = {
   internal: "⇄",
   unknown: "·",
 };
+
+// ANI/DNIS only cleanly exist for a plain two-party call. For anything else
+// (conferences, transfer legs, IVR/queue abandons) the "caller"/"callee" pair
+// is just the primary leg; every other participant is surfaced as an
+// expandable sub-row in the records table rather than forcing a column that
+// can't represent them.
+function computeAniDnis(
+  r: CallRecord
+): { ani: string; dnis: string; extraParticipants: Participant[] } {
+  const caller = r.participants.find((p) => p.role === "caller");
+  const callee = r.participants.find((p) => p.role === "callee");
+  const shown = new Set([caller?.participantId, callee?.participantId].filter(Boolean));
+  return {
+    ani: caller?.extension ?? "—",
+    dnis: callee?.extension ?? r.callSource?.huntNumber ?? "—",
+    extraParticipants: r.participants.filter((p) => !shown.has(p.participantId)),
+  };
+}
 
 // Event families → colour + label, so the timeline encodes what kind of thing
 // happened, not just that something did.
@@ -1479,6 +1502,8 @@ function HeaderMenu({
                 </button>
                 <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
                 <UsersSection currentUsername={authUser.username} />
+                <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
+                <RemoteSourcesSection />
               </>
             )}
           </div>
@@ -2125,6 +2150,1263 @@ function UsersSection({ currentUsername }: { currentUsername: string }) {
         >
           {msg.text}
         </div>
+      )}
+    </div>
+  );
+}
+
+function pollStatusStyle(status: RemotePollStatus | null): { fg: string; bg: string; label: string } {
+  if (status === "ok") return { fg: C.teal, bg: C.tealSoft, label: "ok" };
+  if (status === "validation_rejects") return { fg: C.amber, bg: C.amberSoft, label: "rejects" };
+  if (status === "auth_error") return { fg: C.rose, bg: C.roseSoft, label: "auth error" };
+  if (status === "fetch_error") return { fg: C.rose, bg: C.roseSoft, label: "fetch error" };
+  return { fg: C.textMuted, bg: C.surfaceAlt, label: "never polled" };
+}
+
+// Paginated view of one remote source's rejected (failed-validation) pulled
+// records — a lighter version of AuditLogModal's table/pagination skeleton
+// (no filter bar; this is already scoped to one source), reusing the same
+// generic Pager component and full-screen modal chrome as IngestModal.
+function RemoteSourceRejectsModal({
+  sourceId,
+  sourceName,
+  onClose,
+}: {
+  sourceId: number;
+  sourceName: string;
+  onClose: () => void;
+}) {
+  const [rejects, setRejects] = useState<RemoteSourceReject[] | null>(null);
+  const [pagination, setPagination] = useState<Pagination | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
+  const load = (p: number, ps: number) => {
+    setLoading(true);
+    setError(null);
+    api.remoteSources
+      .rejects(sourceId, { page: p, pageSize: ps })
+      .then((res) => {
+        setRejects(res.data);
+        setPagination(res.pagination);
+        setPage(p);
+        setPageSize(ps);
+      })
+      .catch((e: any) => {
+        setError(e.message ?? "Failed to load rejects");
+        setRejects([]);
+        setPagination(null);
+      })
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load(1, pageSize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,22,32,0.38)",
+        zIndex: 55,
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(760px, 100%)",
+          maxHeight: "min(640px, 100%)",
+          display: "flex",
+          flexDirection: "column",
+          background: C.surface,
+          borderRadius: 14,
+          overflow: "hidden",
+          boxShadow: "0 24px 60px rgba(15,22,32,0.3)",
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: `1px solid ${C.border}`,
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Rejected records</div>
+            <div style={{ fontSize: 12.5, color: C.textMuted, marginTop: 2 }}>{sourceName}</div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              marginLeft: "auto",
+              border: "none",
+              background: "transparent",
+              fontSize: 22,
+              cursor: "pointer",
+              color: C.textMuted,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        <div style={{ padding: "16px 20px", overflow: "auto", flex: 1 }}>
+          {error && (
+            <div
+              style={{
+                marginBottom: 12,
+                padding: "10px 12px",
+                borderRadius: 8,
+                background: C.roseSoft,
+                color: C.rose,
+                fontSize: 13,
+              }}
+            >
+              {error}
+            </div>
+          )}
+          {loading ? (
+            <div style={{ fontSize: 13, color: C.textMuted }}>Loading…</div>
+          ) : !rejects || rejects.length === 0 ? (
+            <div style={{ fontSize: 13, color: C.textMuted }}>No rejected records.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {rejects.map((r) => (
+                <div
+                  key={r.id}
+                  style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px" }}
+                >
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+                    <span style={{ fontFamily: MONO, fontSize: 12, color: C.textMuted }}>
+                      {fmt(r.occurredAt)}
+                    </span>
+                    {r.callId && (
+                      <span style={{ fontFamily: MONO, fontSize: 12, color: C.textMid }}>{r.callId}</span>
+                    )}
+                  </div>
+                  <div style={{ marginTop: 4, fontSize: 12.5, color: C.rose, whiteSpace: "pre-wrap" }}>
+                    {r.validationError}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {pagination && pagination.totalRecords > 0 && (
+          <div style={{ padding: "0 20px 16px" }}>
+            <Pager
+              pagination={pagination}
+              pageSize={pageSize}
+              onPageSizeChange={(n) => load(1, n)}
+              onPrev={() => load(Math.max(1, page - 1), pageSize)}
+              onNext={() => load(Math.min(pagination.totalPages, page + 1), pageSize)}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface ExampleScript {
+  id: string;
+  name: string;
+  description: string;
+  scriptBody: string;
+  envHint: string;
+}
+
+// Reference starting points for the "Custom script (Python)" auth type —
+// stdlib-only except the SFTP one, which needs python3-paramiko (bundled in
+// the backend image specifically so this flagship example — the whole
+// motivating use case for this feature, a CUCM-style file export — actually
+// runs rather than immediately failing with ModuleNotFoundError).
+const EXAMPLE_SCRIPTS: ExampleScript[] = [
+  {
+    id: "minimal",
+    name: "Minimal template",
+    description:
+      "The bare contract and nothing else — reads WATERMARK, returns an empty result, exits 0. Stdlib only, always runs. Start here and build up.",
+    envHint: "",
+    scriptBody: `import json
+import os
+
+# Every run gets WATERMARK (the source's last successful watermark, or its
+# backfillFrom on the very first run) plus whatever env vars you configured
+# for this source below.
+watermark = os.environ.get("WATERMARK")
+
+records = []  # append CallRecord-shaped dicts here
+
+# Advance the watermark to reflect what you actually processed — the backend
+# falls back to "now" if you leave this unchanged, so it's safe to start with
+# this and refine once real data is flowing.
+new_watermark = watermark
+
+print(json.dumps({"records": records, "watermark": new_watermark}))
+`,
+  },
+  {
+    id: "http-json",
+    name: "Generic HTTP JSON API",
+    description:
+      "Pulls CDRs from a JSON REST API using only Python's stdlib (urllib) — no extra packages needed.",
+    envHint: "API_BASE_URL=https://example.com/api/cdrs\nAPI_KEY=",
+    scriptBody: `import json
+import os
+import urllib.request
+from datetime import datetime, timezone
+
+base_url = os.environ["API_BASE_URL"]
+api_key = os.environ.get("API_KEY", "")
+watermark = os.environ.get("WATERMARK")
+
+url = f"{base_url}?since={watermark}"
+headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as resp:
+    raw_records = json.loads(resp.read())
+
+records = []
+for r in raw_records:
+    # Map the remote's own field names onto Open CDR's CallRecord shape —
+    # adjust this block to match whatever the real API actually returns.
+    records.append({
+        "callId": r["id"],
+        "callStartTime": r["startTime"],
+        "callEndTime": r.get("endTime"),
+        "callState": "ended" if r.get("endTime") else "ongoing",
+        "mediaType": "voice",
+        "participants": [
+            {"participantId": "p1", "role": "caller", "extension": r["from"]},
+            {"participantId": "p2", "role": "callee", "extension": r["to"]},
+        ],
+    })
+
+new_watermark = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+print(json.dumps({"records": records, "watermark": new_watermark}))
+`,
+  },
+  {
+    id: "http-csv",
+    name: "CSV export over HTTP",
+    description: "Downloads and parses a CSV CDR export via HTTP — stdlib only (urllib + csv).",
+    envHint: "CSV_URL=https://example.com/cdr-export.csv",
+    scriptBody: `import csv
+import io
+import json
+import os
+import urllib.request
+from datetime import datetime, timezone
+
+csv_url = os.environ["CSV_URL"]
+
+with urllib.request.urlopen(csv_url, timeout=30) as resp:
+    text = resp.read().decode("utf-8")
+
+records = []
+for row in csv.DictReader(io.StringIO(text)):
+    # Adjust these column names to match your actual CSV export.
+    records.append({
+        "callId": row["CallID"],
+        "callStartTime": row["StartTime"],
+        "callEndTime": row.get("EndTime") or None,
+        "callState": "ended",
+        "mediaType": "voice",
+        "participants": [
+            {"participantId": "p1", "role": "caller", "extension": row["CallingNumber"]},
+            {"participantId": "p2", "role": "callee", "extension": row["FinalCalledNumber"]},
+        ],
+    })
+
+new_watermark = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+print(json.dumps({"records": records, "watermark": new_watermark}))
+`,
+  },
+  {
+    id: "sftp-cucm",
+    name: "SFTP file scan (Cisco CUCM-style)",
+    description:
+      "Connects to an SFTP server, lists CDR files newer than the watermark, parses each as CSV. The motivating example for this feature — see the Roadmap.",
+    envHint: "SFTP_HOST=\nSFTP_PORT=22\nSFTP_USER=\nSFTP_PASSWORD=\nSFTP_DIR=/cdr-export",
+    scriptBody: `import csv
+import io
+import json
+import os
+from datetime import datetime, timezone
+
+import paramiko
+
+host = os.environ["SFTP_HOST"]
+port = int(os.environ.get("SFTP_PORT", "22"))
+username = os.environ["SFTP_USER"]
+password = os.environ["SFTP_PASSWORD"]
+remote_dir = os.environ.get("SFTP_DIR", "/")
+watermark = os.environ.get("WATERMARK")
+watermark_dt = datetime.fromisoformat(watermark.replace("Z", "+00:00")) if watermark else None
+
+transport = paramiko.Transport((host, port))
+transport.connect(username=username, password=password)
+sftp = paramiko.SFTPClient.from_transport(transport)
+
+records = []
+latest_mtime = watermark_dt
+try:
+    for entry in sftp.listdir_attr(remote_dir):
+        mtime = datetime.fromtimestamp(entry.st_mtime, tz=timezone.utc)
+        if watermark_dt and mtime <= watermark_dt:
+            continue
+        if not entry.filename.endswith(".csv"):
+            continue
+
+        with sftp.open(f"{remote_dir}/{entry.filename}") as f:
+            content = f.read().decode("utf-8")
+
+        # CUCM CDR files are CSV with a header row — adjust field names to
+        # match your cluster's actual CDR field export configuration.
+        for row in csv.DictReader(io.StringIO(content)):
+            records.append({
+                "callId": row.get("globalCallID_callId") or row.get("CallID"),
+                "callStartTime": row["dateTimeOrigination"],
+                "callEndTime": row.get("dateTimeDisconnect"),
+                "callState": "ended",
+                "mediaType": "voice",
+                "participants": [
+                    {"participantId": "p1", "role": "caller", "extension": row["callingPartyNumber"]},
+                    {"participantId": "p2", "role": "callee", "extension": row["finalCalledPartyNumber"]},
+                ],
+            })
+
+        if latest_mtime is None or mtime > latest_mtime:
+            latest_mtime = mtime
+finally:
+    sftp.close()
+    transport.close()
+
+new_watermark = (latest_mtime or datetime.now(timezone.utc)).isoformat().replace("+00:00", "Z")
+print(json.dumps({"records": records, "watermark": new_watermark}))
+`,
+  },
+];
+
+function ExampleScriptsModal({
+  onUse,
+  onClose,
+}: {
+  onUse: (script: ExampleScript) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,22,32,0.38)",
+        zIndex: 60,
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(640px, 100%)",
+          maxHeight: "min(640px, 100%)",
+          display: "flex",
+          flexDirection: "column",
+          background: C.surface,
+          borderRadius: 14,
+          overflow: "hidden",
+          boxShadow: "0 24px 60px rgba(15,22,32,0.3)",
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: `1px solid ${C.border}`,
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Example scripts</div>
+            <div style={{ fontSize: 12.5, color: C.textMuted, marginTop: 2 }}>
+              Starting points — pick one, then adjust the field mapping and env vars for your real source.
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              marginLeft: "auto",
+              border: "none",
+              background: "transparent",
+              fontSize: 22,
+              cursor: "pointer",
+              color: C.textMuted,
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <div
+          style={{
+            padding: 16,
+            overflow: "auto",
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          {EXAMPLE_SCRIPTS.map((ex) => (
+            <div key={ex.id} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 14px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ fontWeight: 650, fontSize: 13.5, color: C.ink }}>{ex.name}</div>
+                <button
+                  onClick={() => onUse(ex)}
+                  style={{
+                    marginLeft: "auto",
+                    padding: "5px 12px",
+                    borderRadius: 6,
+                    border: "none",
+                    background: C.ink,
+                    color: "#fff",
+                    fontSize: 12,
+                    fontWeight: 650,
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                >
+                  Use this
+                </button>
+              </div>
+              <div style={{ fontSize: 12, color: C.textMid, marginTop: 4, lineHeight: 1.4 }}>{ex.description}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Admin-only, DB-backed config for pulling CDRs from another Open-CDR-compatible
+// platform's own GET /calls, on top of this platform's existing push-based
+// POST /calls/ingest — see backend/src/services/remotePollService.ts. Follows
+// the UsersSection template (inline list + add-form + per-row edit state)
+// rather than the smaller Backups-panel pattern, since multi-source + two
+// auth-type sub-forms is comparable complexity to user management.
+function RemoteSourcesSection() {
+  const [sources, setSources] = useState<RemoteSourceMeta[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [pollingId, setPollingId] = useState<number | null>(null);
+  const [rejectsSource, setRejectsSource] = useState<RemoteSourceMeta | null>(null);
+  const [showExamples, setShowExamples] = useState(false);
+
+  const [newName, setNewName] = useState("");
+  const [newBaseUrl, setNewBaseUrl] = useState("");
+  const [newPollInterval, setNewPollInterval] = useState("15");
+  const [newBackfillFrom, setNewBackfillFrom] = useState(() => isoToLocalInput(new Date().toISOString()));
+  const [newAuthType, setNewAuthType] = useState<RemoteSourceAuthType>("api_key");
+  const [newApiKey, setNewApiKey] = useState("");
+  const [newHeaderName, setNewHeaderName] = useState("");
+  const [newTokenUrl, setNewTokenUrl] = useState("");
+  const [newClientId, setNewClientId] = useState("");
+  const [newClientSecret, setNewClientSecret] = useState("");
+  const [newScope, setNewScope] = useState("");
+  const [newScriptBody, setNewScriptBody] = useState("");
+  const [newEnvText, setNewEnvText] = useState("");
+  const [newAcceptLiability, setNewAcceptLiability] = useState(false);
+
+  // Only one row edits at a time — mutually exclusive with the add-source form.
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editBaseUrl, setEditBaseUrl] = useState("");
+  const [editPollInterval, setEditPollInterval] = useState("15");
+  const [editRotateAuth, setEditRotateAuth] = useState(false);
+  const [editAuthType, setEditAuthType] = useState<RemoteSourceAuthType>("api_key");
+  const [editApiKey, setEditApiKey] = useState("");
+  const [editHeaderName, setEditHeaderName] = useState("");
+  const [editTokenUrl, setEditTokenUrl] = useState("");
+  const [editClientId, setEditClientId] = useState("");
+  const [editClientSecret, setEditClientSecret] = useState("");
+  const [editScope, setEditScope] = useState("");
+  const [editScriptBody, setEditScriptBody] = useState("");
+  const [editEnvText, setEditEnvText] = useState("");
+  const [editAcceptLiability, setEditAcceptLiability] = useState(false);
+  const [editBusy, setEditBusy] = useState(false);
+
+  const refresh = () => {
+    setLoading(true);
+    api.remoteSources
+      .list()
+      .then((res) => setSources(res.data))
+      .catch(() => setSources(null))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // KEY=value, one per line — trims each line, skips blanks and lines with
+  // no "=", splits on the *first* "=" only (so values may contain one), and
+  // last-value-wins on a duplicate key.
+  const parseEnvLines = (text: string): Record<string, string> => {
+    const env: Record<string, string> = {};
+    for (const rawLine of text.split("\n")) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const eq = line.indexOf("=");
+      if (eq === -1) continue;
+      const key = line.slice(0, eq).trim();
+      if (!key) continue;
+      env[key] = line.slice(eq + 1).trim();
+    }
+    return env;
+  };
+
+  const buildAuth = (fields: {
+    authType: RemoteSourceAuthType;
+    apiKey: string;
+    headerName: string;
+    tokenUrl: string;
+    clientId: string;
+    clientSecret: string;
+    scope: string;
+    scriptBody: string;
+    envText: string;
+  }): RemoteSourceAuthInput => {
+    if (fields.authType === "api_key") {
+      return { authType: "api_key", apiKey: fields.apiKey, headerName: fields.headerName || undefined };
+    }
+    if (fields.authType === "oauth2_client_credentials") {
+      return {
+        authType: "oauth2_client_credentials",
+        tokenUrl: fields.tokenUrl,
+        clientId: fields.clientId,
+        clientSecret: fields.clientSecret,
+        scope: fields.scope || undefined,
+      };
+    }
+    return { authType: "custom", scriptBody: fields.scriptBody, env: parseEnvLines(fields.envText) };
+  };
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.remoteSources.create({
+        name: newName,
+        baseUrl: newBaseUrl,
+        pollIntervalMinutes: Number(newPollInterval) || 15,
+        backfillFrom: localInputToIso(newBackfillFrom),
+        auth: buildAuth({
+          authType: newAuthType,
+          apiKey: newApiKey,
+          headerName: newHeaderName,
+          tokenUrl: newTokenUrl,
+          clientId: newClientId,
+          clientSecret: newClientSecret,
+          scope: newScope,
+          scriptBody: newScriptBody,
+          envText: newEnvText,
+        }),
+      });
+      setNewName("");
+      setNewBaseUrl("");
+      setNewPollInterval("15");
+      setNewBackfillFrom(isoToLocalInput(new Date().toISOString()));
+      setNewAuthType("api_key");
+      setNewApiKey("");
+      setNewHeaderName("");
+      setNewTokenUrl("");
+      setNewClientId("");
+      setNewClientSecret("");
+      setNewScope("");
+      setNewScriptBody("");
+      setNewEnvText("");
+      setNewAcceptLiability(false);
+      setShowAdd(false);
+      refresh();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Couldn’t create remote source" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async (source: RemoteSourceMeta) => {
+    if (!window.confirm(`Delete remote source "${source.name}"? This can’t be undone.`)) return;
+    setMsg(null);
+    try {
+      await api.remoteSources.remove(source.id);
+      refresh();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Couldn’t delete remote source" });
+    }
+  };
+
+  const handleToggleEnabled = async (source: RemoteSourceMeta) => {
+    setMsg(null);
+    try {
+      await api.remoteSources.update(source.id, { enabled: !source.enabled });
+      refresh();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Couldn’t update remote source" });
+    }
+  };
+
+  const handlePollNow = async (source: RemoteSourceMeta) => {
+    setPollingId(source.id);
+    setMsg(null);
+    try {
+      const summary = await api.remoteSources.pollNow(source.id);
+      setMsg({
+        ok: summary.status === "ok" || summary.status === "validation_rejects",
+        text: `${source.name}: ${summary.accepted} accepted, ${summary.rejected} rejected (${summary.status})`,
+      });
+      refresh();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Poll failed" });
+    } finally {
+      setPollingId(null);
+    }
+  };
+
+  const startEdit = (source: RemoteSourceMeta) => {
+    setShowAdd(false);
+    setMsg(null);
+    setEditingId(source.id);
+    setEditName(source.name);
+    setEditBaseUrl(source.baseUrl);
+    setEditPollInterval(String(source.pollIntervalMinutes));
+    setEditRotateAuth(false);
+    setEditAuthType(source.authType);
+    setEditApiKey("");
+    setEditHeaderName("");
+    setEditTokenUrl("");
+    setEditClientId("");
+    setEditClientSecret("");
+    setEditScope("");
+    setEditScriptBody("");
+    setEditEnvText("");
+    setEditAcceptLiability(false);
+  };
+
+  const cancelEdit = () => setEditingId(null);
+
+  const handleEditSubmit = async (e: React.FormEvent, source: RemoteSourceMeta) => {
+    e.preventDefault();
+    setEditBusy(true);
+    setMsg(null);
+    try {
+      await api.remoteSources.update(source.id, {
+        name: editName,
+        baseUrl: editBaseUrl,
+        pollIntervalMinutes: Number(editPollInterval) || 15,
+        ...(editRotateAuth
+          ? {
+              auth: buildAuth({
+                authType: editAuthType,
+                apiKey: editApiKey,
+                headerName: editHeaderName,
+                tokenUrl: editTokenUrl,
+                clientId: editClientId,
+                clientSecret: editClientSecret,
+                scope: editScope,
+                scriptBody: editScriptBody,
+                envText: editEnvText,
+              }),
+            }
+          : {}),
+      });
+      setEditingId(null);
+      refresh();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Couldn’t update remote source" });
+    } finally {
+      setEditBusy(false);
+    }
+  };
+
+  const smallInput: React.CSSProperties = {
+    width: "100%",
+    padding: "6px 8px",
+    borderRadius: 6,
+    border: `1px solid ${C.border}`,
+    fontSize: 12,
+    fontFamily: SANS,
+    outline: "none",
+    boxSizing: "border-box",
+  };
+
+  const scriptTextarea: React.CSSProperties = {
+    width: "100%",
+    fontFamily: MONO,
+    fontSize: 11.5,
+    lineHeight: 1.5,
+    padding: 8,
+    borderRadius: 6,
+    border: `1px solid ${C.border}`,
+    background: C.surfaceAlt,
+    color: C.ink,
+    resize: "vertical",
+    outline: "none",
+    boxSizing: "border-box",
+  };
+
+  // Shared by the add-form and the edit-form's optional "rotate credential" fields.
+  const authFields = (fields: {
+    authType: RemoteSourceAuthType;
+    setAuthType: (v: RemoteSourceAuthType) => void;
+    apiKey: string;
+    setApiKey: (v: string) => void;
+    headerName: string;
+    setHeaderName: (v: string) => void;
+    tokenUrl: string;
+    setTokenUrl: (v: string) => void;
+    clientId: string;
+    setClientId: (v: string) => void;
+    clientSecret: string;
+    setClientSecret: (v: string) => void;
+    scope: string;
+    setScope: (v: string) => void;
+    scriptBody: string;
+    setScriptBody: (v: string) => void;
+    envText: string;
+    setEnvText: (v: string) => void;
+    acceptLiability: boolean;
+    setAcceptLiability: (v: boolean) => void;
+  }) => (
+    <>
+      <select
+        value={fields.authType}
+        onChange={(e) => fields.setAuthType(e.target.value as RemoteSourceAuthType)}
+        style={smallInput}
+      >
+        <option value="api_key">API key</option>
+        <option value="oauth2_client_credentials">OAuth2 client credentials</option>
+        <option value="custom">Custom script (Python)</option>
+      </select>
+      {fields.authType === "api_key" ? (
+        <>
+          <input
+            type="password"
+            placeholder="API key"
+            value={fields.apiKey}
+            onChange={(e) => fields.setApiKey(e.target.value)}
+            style={smallInput}
+          />
+          <input
+            placeholder="Header name (default X-API-Key)"
+            value={fields.headerName}
+            onChange={(e) => fields.setHeaderName(e.target.value)}
+            style={smallInput}
+          />
+        </>
+      ) : fields.authType === "oauth2_client_credentials" ? (
+        <>
+          <input
+            placeholder="Token URL"
+            value={fields.tokenUrl}
+            onChange={(e) => fields.setTokenUrl(e.target.value)}
+            style={smallInput}
+          />
+          <input
+            placeholder="Client ID"
+            value={fields.clientId}
+            onChange={(e) => fields.setClientId(e.target.value)}
+            style={smallInput}
+          />
+          <input
+            type="password"
+            placeholder="Client secret"
+            value={fields.clientSecret}
+            onChange={(e) => fields.setClientSecret(e.target.value)}
+            style={smallInput}
+          />
+          <input
+            placeholder="Scope (optional)"
+            value={fields.scope}
+            onChange={(e) => fields.setScope(e.target.value)}
+            style={smallInput}
+          />
+        </>
+      ) : (
+        <>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+            <div style={{ fontSize: 10.5, color: C.textMuted, flex: 1 }}>
+              Script owns the whole pull: connect, scan since <code style={{ fontFamily: MONO }}>WATERMARK</code>{" "}
+              (env var), parse, map to CallRecord shape, print{" "}
+              <code style={{ fontFamily: MONO }}>{`{"records": [...], "watermark": "..."}`}</code> to stdout, exit 0.
+              Runs sandboxed (non-root, timed out, memory- and output-capped) but with real network access.
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowExamples(true)}
+              style={{
+                border: `1px solid ${C.border}`,
+                background: C.surface,
+                color: C.accentDeep,
+                borderRadius: 6,
+                padding: "4px 9px",
+                fontSize: 11,
+                fontWeight: 650,
+                cursor: "pointer",
+                flexShrink: 0,
+                whiteSpace: "nowrap",
+              }}
+            >
+              Example scripts
+            </button>
+          </div>
+          {showExamples && (
+            <ExampleScriptsModal
+              onUse={(ex) => {
+                fields.setScriptBody(ex.scriptBody);
+                fields.setEnvText(ex.envHint);
+                setShowExamples(false);
+              }}
+              onClose={() => setShowExamples(false)}
+            />
+          )}
+          <textarea
+            placeholder="Python script body"
+            value={fields.scriptBody}
+            onChange={(e) => fields.setScriptBody(e.target.value)}
+            spellCheck={false}
+            style={{ ...scriptTextarea, height: 180 }}
+          />
+          <div style={{ fontSize: 10.5, color: C.textMuted }}>
+            Environment variables for the script, one <code style={{ fontFamily: MONO }}>KEY=value</code> per line
+            (e.g. SFTP host/user/password) — encrypted at rest, same as the credentials above.
+          </div>
+          <textarea
+            placeholder={"SFTP_HOST=example.com\nSFTP_USER=cdr-export\nSFTP_PASSWORD=..."}
+            value={fields.envText}
+            onChange={(e) => fields.setEnvText(e.target.value)}
+            spellCheck={false}
+            style={{ ...scriptTextarea, height: 70 }}
+          />
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              padding: "8px 10px",
+              borderRadius: 6,
+              background: C.roseSoft,
+              border: `1px solid ${C.rose}55`,
+            }}
+          >
+            <input
+              type="checkbox"
+              id="accept-script-liability"
+              checked={fields.acceptLiability}
+              onChange={(e) => fields.setAcceptLiability(e.target.checked)}
+              style={{ marginTop: 2, flexShrink: 0 }}
+            />
+            <label
+              htmlFor="accept-script-liability"
+              style={{ fontSize: 11, color: C.rose, lineHeight: 1.4, cursor: "pointer" }}
+            >
+              This script will execute on this server with real network access every time this source polls. I
+              wrote it (or trust whoever did), and I accept full responsibility for what it does — this platform
+              runs it as submitted, with only coarse limits (non-root, a timeout, memory/output caps), not a
+              security sandbox.
+            </label>
+          </div>
+        </>
+      )}
+    </>
+  );
+
+  return (
+    <div style={{ padding: "8px 10px" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 6,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 10.5,
+            letterSpacing: 0.5,
+            textTransform: "uppercase",
+            color: C.textMuted,
+            fontWeight: 700,
+          }}
+        >
+          Remote sources
+        </div>
+        <button
+          onClick={() => {
+            setEditingId(null);
+            setShowAdd((v) => !v);
+          }}
+          style={{
+            border: "none",
+            background: "transparent",
+            color: C.accentDeep,
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: 650,
+            padding: 0,
+          }}
+        >
+          {showAdd ? "Cancel" : "+ Add source"}
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={{ fontSize: 12.5, color: C.textMuted }}>Loading…</div>
+      ) : !sources || sources.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: C.textMuted }}>No remote sources configured.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 260, overflowY: "auto" }}>
+          {sources.map((s) =>
+            editingId === s.id ? (
+              <form
+                key={s.id}
+                onSubmit={(e) => handleEditSubmit(e, s)}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                  padding: "8px 0",
+                  borderTop: `1px solid ${C.border}`,
+                }}
+              >
+                <div style={{ fontWeight: 650, fontSize: 12, color: C.ink }}>Editing {s.name}</div>
+                <input
+                  placeholder="Name"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  required
+                  style={smallInput}
+                />
+                <input
+                  placeholder="Base URL"
+                  value={editBaseUrl}
+                  onChange={(e) => setEditBaseUrl(e.target.value)}
+                  required
+                  style={smallInput}
+                />
+                <input
+                  type="number"
+                  min={1}
+                  placeholder="Poll interval (minutes)"
+                  value={editPollInterval}
+                  onChange={(e) => setEditPollInterval(e.target.value)}
+                  style={smallInput}
+                />
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.textMid }}>
+                  <input
+                    type="checkbox"
+                    checked={editRotateAuth}
+                    onChange={(e) => setEditRotateAuth(e.target.checked)}
+                  />
+                  Change credential
+                </label>
+                {editRotateAuth &&
+                  authFields({
+                    authType: editAuthType,
+                    setAuthType: setEditAuthType,
+                    apiKey: editApiKey,
+                    setApiKey: setEditApiKey,
+                    headerName: editHeaderName,
+                    setHeaderName: setEditHeaderName,
+                    tokenUrl: editTokenUrl,
+                    setTokenUrl: setEditTokenUrl,
+                    clientId: editClientId,
+                    setClientId: setEditClientId,
+                    clientSecret: editClientSecret,
+                    setClientSecret: setEditClientSecret,
+                    scope: editScope,
+                    setScope: setEditScope,
+                    scriptBody: editScriptBody,
+                    setScriptBody: setEditScriptBody,
+                    envText: editEnvText,
+                    setEnvText: setEditEnvText,
+                    acceptLiability: editAcceptLiability,
+                    setAcceptLiability: setEditAcceptLiability,
+                  })}
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    type="submit"
+                    disabled={editBusy || (editRotateAuth && editAuthType === "custom" && !editAcceptLiability)}
+                    style={{
+                      flex: 1,
+                      padding: "7px 10px",
+                      borderRadius: 6,
+                      border: "none",
+                      background:
+                        editBusy || (editRotateAuth && editAuthType === "custom" && !editAcceptLiability)
+                          ? C.borderStrong
+                          : C.ink,
+                      color: "#fff",
+                      fontSize: 12,
+                      fontWeight: 650,
+                      cursor:
+                        editBusy || (editRotateAuth && editAuthType === "custom" && !editAcceptLiability)
+                          ? "default"
+                          : "pointer",
+                    }}
+                  >
+                    {editBusy ? "Saving…" : "Save"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={cancelEdit}
+                    style={{
+                      flex: 1,
+                      padding: "7px 10px",
+                      borderRadius: 6,
+                      border: `1px solid ${C.border}`,
+                      background: C.surface,
+                      color: C.textMid,
+                      fontSize: 12,
+                      fontWeight: 650,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div key={s.id} style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 12 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: C.ink, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                    <span
+                      style={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={s.baseUrl}
+                    >
+                      {s.name}
+                    </span>
+                    {!s.enabled && <span style={{ fontSize: 10.5, color: C.textMuted }}>(disabled)</span>}
+                  </div>
+                  <div style={{ color: C.textMuted, fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}>
+                    <span>{s.lastPolledAt ? `last polled ${fmtRelative(s.lastPolledAt)}` : "never polled"}</span>
+                    <span
+                      style={{
+                        padding: "1px 5px",
+                        borderRadius: 4,
+                        fontSize: 10,
+                        fontWeight: 650,
+                        background: pollStatusStyle(s.lastPollStatus).bg,
+                        color: pollStatusStyle(s.lastPollStatus).fg,
+                      }}
+                    >
+                      {pollStatusStyle(s.lastPollStatus).label}
+                    </span>
+                  </div>
+                  {s.rejectCount > 0 && (
+                    <button
+                      onClick={() => setRejectsSource(s)}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        color: C.rose,
+                        fontSize: 11,
+                        padding: 0,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {s.rejectCount} reject{s.rejectCount === 1 ? "" : "s"} →
+                    </button>
+                  )}
+                </div>
+                <button
+                  onClick={() => handlePollNow(s)}
+                  disabled={pollingId === s.id}
+                  title="Poll now"
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: C.accentDeep,
+                    cursor: pollingId === s.id ? "default" : "pointer",
+                    fontSize: 12,
+                    flexShrink: 0,
+                    padding: "1px 3px",
+                  }}
+                >
+                  {pollingId === s.id ? "Polling…" : "Poll now"}
+                </button>
+                <button
+                  onClick={() => handleToggleEnabled(s)}
+                  title={s.enabled ? "Disable" : "Enable"}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: C.textMid,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    flexShrink: 0,
+                    padding: "1px 3px",
+                  }}
+                >
+                  {s.enabled ? "Disable" : "Enable"}
+                </button>
+                <button
+                  onClick={() => startEdit(s)}
+                  title={`Edit ${s.name}`}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: C.accentDeep,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    flexShrink: 0,
+                    padding: "1px 3px",
+                  }}
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => handleDelete(s)}
+                  title={`Delete ${s.name}`}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: C.rose,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    flexShrink: 0,
+                    padding: "1px 3px",
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            )
+          )}
+        </div>
+      )}
+
+      {showAdd && (
+        <form onSubmit={handleAdd} style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+          <input
+            placeholder="Name"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            required
+            style={smallInput}
+          />
+          <input
+            placeholder={
+              newAuthType === "custom"
+                ? "Base URL — not used by a script; any valid URL is fine as a label, e.g. https://cucm.internal.example"
+                : "Base URL (e.g. https://other-instance.example.com/api/cdr/v1)"
+            }
+            value={newBaseUrl}
+            onChange={(e) => setNewBaseUrl(e.target.value)}
+            required
+            style={smallInput}
+          />
+          <input
+            type="number"
+            min={1}
+            placeholder="Poll interval (minutes)"
+            value={newPollInterval}
+            onChange={(e) => setNewPollInterval(e.target.value)}
+            style={smallInput}
+          />
+          <label style={{ fontSize: 11, color: C.textMuted }}>
+            Backfill from
+            <input
+              type="datetime-local"
+              value={newBackfillFrom}
+              onChange={(e) => setNewBackfillFrom(e.target.value)}
+              required
+              style={{ ...smallInput, marginTop: 2 }}
+            />
+          </label>
+          {authFields({
+            authType: newAuthType,
+            setAuthType: setNewAuthType,
+            apiKey: newApiKey,
+            setApiKey: setNewApiKey,
+            headerName: newHeaderName,
+            setHeaderName: setNewHeaderName,
+            tokenUrl: newTokenUrl,
+            setTokenUrl: setNewTokenUrl,
+            clientId: newClientId,
+            setClientId: setNewClientId,
+            clientSecret: newClientSecret,
+            setClientSecret: setNewClientSecret,
+            scope: newScope,
+            setScope: setNewScope,
+            scriptBody: newScriptBody,
+            setScriptBody: setNewScriptBody,
+            envText: newEnvText,
+            setEnvText: setNewEnvText,
+            acceptLiability: newAcceptLiability,
+            setAcceptLiability: setNewAcceptLiability,
+          })}
+          <button
+            type="submit"
+            disabled={busy || (newAuthType === "custom" && !newAcceptLiability)}
+            style={{
+              padding: "7px 10px",
+              borderRadius: 6,
+              border: "none",
+              background: busy || (newAuthType === "custom" && !newAcceptLiability) ? C.borderStrong : C.ink,
+              color: "#fff",
+              fontSize: 12,
+              fontWeight: 650,
+              cursor: busy || (newAuthType === "custom" && !newAcceptLiability) ? "default" : "pointer",
+            }}
+          >
+            {busy ? "Creating…" : "Create source"}
+          </button>
+        </form>
+      )}
+
+      {msg && (
+        <div
+          style={{
+            marginTop: 8,
+            padding: "6px 8px",
+            borderRadius: 6,
+            fontSize: 11.5,
+            background: msg.ok ? C.tealSoft : C.roseSoft,
+            color: msg.ok ? C.teal : C.rose,
+          }}
+        >
+          {msg.text}
+        </div>
+      )}
+
+      {rejectsSource && (
+        <RemoteSourceRejectsModal
+          sourceId={rejectsSource.id}
+          sourceName={rejectsSource.name}
+          onClose={() => setRejectsSource(null)}
+        />
       )}
     </div>
   );
@@ -3914,19 +5196,31 @@ function ExportMenu({
 
 // ─── Records table ────────────────────────────────────────────────────────────
 const TABLE_COLUMNS: { id: string; label: string; width: number; minWidth: number }[] = [
-  { id: "callId", label: "Call ID", width: 190, minWidth: 100 },
-  { id: "platform", label: "Platform", width: 130, minWidth: 80 },
+  { id: "callId", label: "Call ID", width: 170, minWidth: 100 },
+  { id: "platform", label: "Platform", width: 110, minWidth: 80 },
   { id: "dir", label: "Dir", width: 56, minWidth: 40 },
-  { id: "type", label: "Type", width: 130, minWidth: 70 },
-  { id: "media", label: "Media", width: 130, minWidth: 70 },
-  { id: "state", label: "State", width: 100, minWidth: 70 },
-  { id: "start", label: "Start", width: 150, minWidth: 100 },
-  { id: "duration", label: "Duration", width: 90, minWidth: 60 },
-  { id: "parties", label: "Parties", width: 80, minWidth: 50 },
+  { id: "type", label: "Type", width: 100, minWidth: 70 },
+  { id: "media", label: "Media", width: 100, minWidth: 70 },
+  { id: "state", label: "State", width: 90, minWidth: 70 },
+  { id: "start", label: "Start", width: 145, minWidth: 100 },
+  { id: "duration", label: "Duration", width: 80, minWidth: 60 },
+  { id: "ani", label: "ANI", width: 110, minWidth: 80 },
+  { id: "dnis", label: "DNIS", width: 110, minWidth: 80 },
   { id: "rec", label: "Rec", width: 56, minWidth: 40 },
 ];
 
-const COLUMN_WIDTHS_KEY = "opencdr.recordsTable.columnWidths";
+const NON_HIDEABLE_COLUMN_ID = "callId";
+
+// v2: v1 persisted the full merged widths map on every mount, so once a
+// browser loaded the table even once, its stored blob permanently overrode
+// any later change to the code-level defaults (discovered when tightening
+// the defaults did nothing for anyone who'd already visited). v2 stores only
+// columns the user actually resized (see the persistence effect below) and
+// uses a new key so pre-existing v1 blobs — which can't be told apart from a
+// real customization — are simply abandoned rather than migrated.
+const COLUMN_WIDTHS_KEY = "opencdr.recordsTable.columnWidths.v2";
+const COLUMN_ORDER_KEY = "opencdr.recordsTable.columnOrder";
+const COLUMN_HIDDEN_KEY = "opencdr.recordsTable.columnHidden";
 
 function defaultColumnWidths(): Record<string, number> {
   const w: Record<string, number> = {};
@@ -3944,6 +5238,166 @@ function loadColumnWidths(): Record<string, number> {
   }
 }
 
+function defaultColumnOrder(): string[] {
+  return TABLE_COLUMNS.map((c) => c.id);
+}
+
+function loadColumnOrder(): string[] {
+  const allIds = defaultColumnOrder();
+  try {
+    const raw = localStorage.getItem(COLUMN_ORDER_KEY);
+    const stored: string[] = raw ? JSON.parse(raw) : [];
+    const known = stored.filter((id) => allIds.includes(id));
+    const missing = allIds.filter((id) => !known.includes(id));
+    return [...known, ...missing]; // columns added since the stored order was saved land at the end
+  } catch {
+    return allIds;
+  }
+}
+
+function loadColumnHidden(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLUMN_HIDDEN_KEY);
+    const stored: string[] = raw ? JSON.parse(raw) : [];
+    return new Set(stored.filter((id) => id !== NON_HIDEABLE_COLUMN_ID));
+  } catch {
+    return new Set();
+  }
+}
+
+function ColumnsMenu({
+  columns,
+  hiddenIds,
+  onToggleHidden,
+  onMove,
+  onReset,
+}: {
+  columns: { id: string; label: string }[];
+  hiddenIds: Set<string>;
+  onToggleHidden: (id: string) => void;
+  onMove: (id: string, direction: -1 | 1) => void;
+  onReset: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const iconBtn: React.CSSProperties = {
+    border: "none",
+    background: "transparent",
+    color: C.textMuted,
+    cursor: "pointer",
+    fontSize: 12,
+    padding: "2px 4px",
+    lineHeight: 1,
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          border: "none",
+          background: "transparent",
+          color: C.textMuted,
+          fontSize: 11,
+          cursor: "pointer",
+          padding: "2px 4px",
+        }}
+      >
+        ⚙ Columns
+      </button>
+
+      {open && (
+        <>
+          <div
+            onClick={() => setOpen(false)}
+            style={{ position: "fixed", inset: 0, zIndex: 29 }}
+          />
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(100% + 6px)",
+              right: 0,
+              zIndex: 30,
+              minWidth: 220,
+              background: C.surface,
+              border: `1px solid ${C.border}`,
+              borderRadius: 10,
+              boxShadow: "0 14px 34px rgba(15,22,32,0.16)",
+              padding: 4,
+              overflow: "hidden",
+            }}
+          >
+            {columns.map((c, i) => {
+              const locked = c.id === NON_HIDEABLE_COLUMN_ID;
+              const hidden = hiddenIds.has(c.id);
+              return (
+                <div
+                  key={c.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "6px 10px",
+                    fontSize: 12.5,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!hidden}
+                    disabled={locked}
+                    onChange={() => onToggleHidden(c.id)}
+                    style={{ cursor: locked ? "default" : "pointer" }}
+                  />
+                  <span style={{ flex: 1, color: hidden ? C.textMuted : C.ink }}>
+                    {c.label}
+                    {locked && (
+                      <span style={{ color: C.textMuted }}> (always shown)</span>
+                    )}
+                  </span>
+                  <button
+                    onClick={() => onMove(c.id, -1)}
+                    disabled={i === 0}
+                    title="Move up"
+                    style={{ ...iconBtn, opacity: i === 0 ? 0.3 : 1 }}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    onClick={() => onMove(c.id, 1)}
+                    disabled={i === columns.length - 1}
+                    title="Move down"
+                    style={{ ...iconBtn, opacity: i === columns.length - 1 ? 0.3 : 1 }}
+                  >
+                    ↓
+                  </button>
+                </div>
+              );
+            })}
+            <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 2, paddingTop: 2 }}>
+              <button
+                onClick={onReset}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "7px 10px",
+                  border: "none",
+                  background: "transparent",
+                  color: C.textMuted,
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                ↺ Reset to default
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function RecordsTable({
   records,
   loading,
@@ -3956,17 +5410,84 @@ function RecordsTable({
   selectedId?: string;
 }) {
   const [widths, setWidths] = useState<Record<string, number>>(loadColumnWidths);
+  const [columnOrder, setColumnOrder] = useState<string[]>(loadColumnOrder);
+  const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(loadColumnHidden);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const dragRef = React.useRef<{ id: string; startX: number; startWidth: number } | null>(
     null
   );
 
+  const toggleExpanded = (callId: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(callId)) next.delete(callId);
+      else next.add(callId);
+      return next;
+    });
+  };
+
   useEffect(() => {
     try {
-      localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(widths));
+      // Only persist widths that differ from the current code defaults, not
+      // the whole merged map — so a future default-width tweak takes effect
+      // immediately for every column nobody has actually dragged, instead of
+      // being permanently shadowed by a stale full-map blob (see COLUMN_WIDTHS_KEY).
+      const defaults = defaultColumnWidths();
+      const customized = Object.fromEntries(
+        Object.entries(widths).filter(([id, w]) => w !== defaults[id])
+      );
+      localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(customized));
     } catch {
       // localStorage unavailable (private mode, etc.) — resizing still works, just not persisted.
     }
   }, [widths]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLUMN_ORDER_KEY, JSON.stringify(columnOrder));
+    } catch {
+      // localStorage unavailable — reordering still works for the session, just not persisted.
+    }
+  }, [columnOrder]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLUMN_HIDDEN_KEY, JSON.stringify(Array.from(hiddenColumns)));
+    } catch {
+      // localStorage unavailable — hiding still works for the session, just not persisted.
+    }
+  }, [hiddenColumns]);
+
+  const columnsById: Record<string, (typeof TABLE_COLUMNS)[number]> = {};
+  for (const c of TABLE_COLUMNS) columnsById[c.id] = c;
+  const orderedColumns = columnOrder.map((id) => columnsById[id]).filter(Boolean);
+  const visibleColumns = orderedColumns.filter((c) => !hiddenColumns.has(c.id));
+
+  const toggleColumnHidden = (id: string) => {
+    if (id === NON_HIDEABLE_COLUMN_ID) return;
+    setHiddenColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const moveColumn = (id: string, direction: -1 | 1) => {
+    setColumnOrder((prev) => {
+      const idx = prev.indexOf(id);
+      const swapWith = idx + direction;
+      if (idx < 0 || swapWith < 0 || swapWith >= prev.length) return prev;
+      const next = [...prev];
+      [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
+      return next;
+    });
+  };
+
+  const resetColumnsConfig = () => {
+    setColumnOrder(defaultColumnOrder());
+    setHiddenColumns(new Set());
+  };
 
   const onResizeMove = (e: MouseEvent) => {
     const d = dragRef.current;
@@ -4033,7 +5554,22 @@ function RecordsTable({
         overflow: "hidden",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "flex-end", padding: "6px 10px 0" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-end",
+          gap: 4,
+          padding: "6px 10px 0",
+        }}
+      >
+        <ColumnsMenu
+          columns={orderedColumns}
+          hiddenIds={hiddenColumns}
+          onToggleHidden={toggleColumnHidden}
+          onMove={moveColumn}
+          onReset={resetColumnsConfig}
+        />
         <button
           onClick={resetWidths}
           style={{
@@ -4045,19 +5581,19 @@ function RecordsTable({
             padding: "2px 4px",
           }}
         >
-          ↺ Reset columns
+          ↺ Reset widths
         </button>
       </div>
       <div style={{ overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", tableLayout: "fixed", width: "max-content" }}>
           <colgroup>
-            {TABLE_COLUMNS.map((c) => (
+            {visibleColumns.map((c) => (
               <col key={c.id} style={{ width: widths[c.id] }} />
             ))}
           </colgroup>
           <thead>
             <tr>
-              {TABLE_COLUMNS.map((c) => (
+              {visibleColumns.map((c) => (
                 <th key={c.id} style={{ ...head, position: "relative" }}>
                   {c.label}
                   <span
@@ -4103,14 +5639,20 @@ function RecordsTable({
           <tbody>
             {loading && records.length === 0 && (
               <tr>
-                <td style={{ ...cell, textAlign: "center", color: C.textMuted }} colSpan={10}>
+                <td
+                  style={{ ...cell, textAlign: "center", color: C.textMuted }}
+                  colSpan={visibleColumns.length}
+                >
                   Loading…
                 </td>
               </tr>
             )}
             {!loading && records.length === 0 && (
               <tr>
-                <td style={{ ...cell, textAlign: "center", color: C.textMuted, padding: 28 }} colSpan={10}>
+                <td
+                  style={{ ...cell, textAlign: "center", color: C.textMuted, padding: 28 }}
+                  colSpan={visibleColumns.length}
+                >
                   No records in this window. Widen the time range, clear filters, or
                   ingest some records.
                 </td>
@@ -4120,61 +5662,105 @@ function RecordsTable({
               const st = stateStyle(r.callState);
               const rec = r.cloudRecording?.recordingStatus;
               const isSel = r.callId === selectedId;
-              return (
-                <tr
-                  key={r.callId}
-                  onClick={() => onSelect(r)}
-                  style={{
-                    cursor: "pointer",
-                    background: isSel ? C.accentSoft : "transparent",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!isSel) e.currentTarget.style.background = C.surfaceAlt;
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!isSel) e.currentTarget.style.background = "transparent";
-                  }}
-                >
-                  <td style={{ ...cell, fontFamily: MONO, color: C.accentDeep }} title={r.callId}>
-                    {r.callId}
-                  </td>
-                  <td style={{ ...cell, fontFamily: MONO, fontSize: 12, color: C.textMid }}>
-                    {r.sourcePlatformId ? (
-                      <span title={r.sourcePlatformType ?? undefined}>
-                        {r.sourcePlatformId}
-                      </span>
-                    ) : (
-                      <span style={{ color: C.textMuted }}>—</span>
-                    )}
-                  </td>
-                  <td style={{ ...cell, textAlign: "center" }} title={r.callDirection}>
-                    {directionGlyph[r.callDirection ?? "unknown"] ?? "·"}
-                  </td>
-                  <td style={{ ...cell, color: C.textMid, fontFamily: MONO, fontSize: 12 }}>
-                    {(r.callType ?? "—").replace(/_/g, " ")}
-                  </td>
-                  <td style={cell}>
+              const { ani, dnis, extraParticipants } = computeAniDnis(r);
+              const isExpandable = extraParticipants.length > 0;
+              const isExpanded = expandedIds.has(r.callId);
+
+              const cellsById: Record<string, { style?: React.CSSProperties; content: React.ReactNode }> = {
+                callId: {
+                  style: { fontFamily: MONO, color: C.accentDeep },
+                  content: (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                      {isExpandable ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleExpanded(r.callId);
+                          }}
+                          title={
+                            isExpanded
+                              ? "Collapse participants"
+                              : `Show ${extraParticipants.length} more participant${
+                                  extraParticipants.length === 1 ? "" : "s"
+                                }`
+                          }
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            color: C.textMuted,
+                            cursor: "pointer",
+                            fontSize: 15,
+                            lineHeight: 1,
+                            padding: 0,
+                            width: 16,
+                            flexShrink: 0,
+                          }}
+                        >
+                          {isExpanded ? "▾" : "▸"}
+                        </button>
+                      ) : (
+                        <span style={{ width: 16, display: "inline-block", flexShrink: 0 }} />
+                      )}
+                      <span title={r.callId}>{r.callId}</span>
+                    </span>
+                  ),
+                },
+                platform: {
+                  style: { fontFamily: MONO, fontSize: 12, color: C.textMid },
+                  content: r.sourcePlatformId ? (
+                    <span title={r.sourcePlatformType ?? undefined}>{r.sourcePlatformId}</span>
+                  ) : (
+                    <span style={{ color: C.textMuted }}>—</span>
+                  ),
+                },
+                dir: {
+                  style: { textAlign: "center" },
+                  content: (
+                    <span title={r.callDirection}>
+                      {directionGlyph[r.callDirection ?? "unknown"] ?? "·"}
+                    </span>
+                  ),
+                },
+                type: {
+                  style: { color: C.textMid, fontFamily: MONO, fontSize: 12 },
+                  content: (r.callType ?? "—").replace(/_/g, " "),
+                },
+                media: {
+                  content: (
                     <span title={r.mediaType}>
                       {mediaGlyph[r.mediaType] ?? "·"}{" "}
                       <span style={{ color: C.textMid, fontSize: 12 }}>
                         {r.mediaType.replace(/_/g, " ")}
                       </span>
                     </span>
-                  </td>
-                  <td style={cell}>
+                  ),
+                },
+                state: {
+                  content: (
                     <Pill fg={st.fg} bg={st.bg}>
                       {st.label}
                     </Pill>
-                  </td>
-                  <td style={{ ...cell, fontFamily: MONO, fontSize: 12, color: C.textMid }}>
-                    {fmt(r.callStartTime)}
-                  </td>
-                  <td style={{ ...cell, fontFamily: MONO }}>{fmtDur(r.durationSeconds)}</td>
-                  <td style={{ ...cell, textAlign: "center", fontFamily: MONO }}>
-                    {r.participants.length}
-                  </td>
-                  <td style={cell}>
-                    {rec === "recorded" ? (
+                  ),
+                },
+                start: {
+                  style: { fontFamily: MONO, fontSize: 12, color: C.textMid },
+                  content: fmt(r.callStartTime),
+                },
+                duration: {
+                  style: { fontFamily: MONO },
+                  content: fmtDur(r.durationSeconds),
+                },
+                ani: {
+                  style: { fontFamily: MONO, fontSize: 12, color: C.textMid },
+                  content: ani,
+                },
+                dnis: {
+                  style: { fontFamily: MONO, fontSize: 12, color: C.textMid },
+                  content: dnis,
+                },
+                rec: {
+                  content:
+                    rec === "recorded" ? (
                       <span title="recorded" style={{ color: C.amber, fontSize: 15 }}>
                         ●
                       </span>
@@ -4186,9 +5772,68 @@ function RecordsTable({
                       <span title={rec ?? "unknown"} style={{ color: C.textMuted }}>
                         ○
                       </span>
-                    )}
-                  </td>
-                </tr>
+                    ),
+                },
+              };
+
+              return (
+                <React.Fragment key={r.callId}>
+                  <tr
+                    onClick={() => onSelect(r)}
+                    style={{
+                      cursor: "pointer",
+                      background: isSel ? C.accentSoft : "transparent",
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isSel) e.currentTarget.style.background = C.surfaceAlt;
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isSel) e.currentTarget.style.background = "transparent";
+                    }}
+                  >
+                    {visibleColumns.map((c) => (
+                      <td key={c.id} style={{ ...cell, ...cellsById[c.id]?.style }}>
+                        {cellsById[c.id]?.content}
+                      </td>
+                    ))}
+                  </tr>
+                  {isExpanded &&
+                    extraParticipants.map((p) => (
+                      <tr
+                        key={`${r.callId}-${p.participantId}`}
+                        style={{ background: C.surfaceAlt }}
+                      >
+                        <td
+                          colSpan={visibleColumns.length}
+                          style={{ ...cell, paddingLeft: 34, color: C.textMid, fontSize: 12.5 }}
+                        >
+                          <span style={{ color: C.textMuted, marginRight: 8 }}>↳</span>
+                          <Pill fg={C.textMid} bg={C.surfaceDeep}>
+                            {p.role.replace(/_/g, " ")}
+                          </Pill>
+                          <span style={{ marginLeft: 8, fontFamily: MONO }}>{p.extension}</span>
+                          {p.displayName && (
+                            <span style={{ marginLeft: 8, color: C.textMuted }}>
+                              {p.displayName}
+                            </span>
+                          )}
+                          {(p.joinTime || p.leaveTime) && (
+                            <span
+                              style={{
+                                marginLeft: 8,
+                                color: C.textMuted,
+                                fontFamily: MONO,
+                                fontSize: 12,
+                              }}
+                            >
+                              {p.joinTime ? fmt(p.joinTime) : ""}
+                              {p.leaveTime ? ` – ${fmt(p.leaveTime)}` : ""}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                </React.Fragment>
               );
             })}
           </tbody>

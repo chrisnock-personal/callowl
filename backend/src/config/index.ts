@@ -59,6 +59,19 @@ const envSchema = z.object({
   // How long audit_log entries are kept — pruned once on boot and daily
   // thereafter (see index.ts). Mirrors BACKUP_RETENTION_DAYS.
   AUDIT_LOG_RETENTION_DAYS: z.string().default("90"),
+
+  // Reversible-encryption key (32 bytes, base64 — openssl rand -base64 32)
+  // for remote source credentials (services/cryptoService.ts). Optional at
+  // boot, same as ADMIN_API_KEY/BACKUPS_DIR — this feature is fully opt-in,
+  // so deployments that never configure a remote source don't need it.
+  // Gated at the point of use: creating a remote source with a secret while
+  // this is unset returns a 501, same pattern as the backups endpoints do
+  // for an unconfigured BACKUPS_DIR.
+  REMOTE_SOURCE_ENC_KEY: z.string().optional(),
+
+  // How long remote_source_rejects entries are kept — pruned once on boot
+  // and daily thereafter (see index.ts). Mirrors AUDIT_LOG_RETENTION_DAYS.
+  REMOTE_SOURCE_REJECTS_RETENTION_DAYS: z.string().default("90"),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -108,6 +121,11 @@ export const config = {
 
   auditLog: {
     retentionDays: parseInt(env.AUDIT_LOG_RETENTION_DAYS, 10),
+  },
+
+  remoteSources: {
+    encryptionKey: env.REMOTE_SOURCE_ENC_KEY,
+    rejectsRetentionDays: parseInt(env.REMOTE_SOURCE_REJECTS_RETENTION_DAYS, 10),
   },
 
   db: {

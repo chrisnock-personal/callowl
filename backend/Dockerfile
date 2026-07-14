@@ -29,6 +29,19 @@ RUN apt-get update \
   && apt-get purge -y --auto-remove curl gnupg \
   && rm -rf /var/lib/apt/lists/*
 
+# python3 for executing admin-authored "custom" remote-source scripts
+# (services/remoteScriptRunner.ts). python3-paramiko (SSH/SFTP) is here too —
+# the flagship "custom source" use case is exactly a CUCM-style SFTP file
+# scan (see the bundled example scripts in the dashboard's Remote sources
+# panel), so it needs to actually work out of the box rather than being a
+# script that immediately fails with ModuleNotFoundError. Both are plain
+# Debian bookworm packages, no extra repo needed unlike postgresql-client-16
+# above — kept as their own layer since they're unrelated to that block's
+# PGDG add/purge dance.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 python3-paramiko \
+  && rm -rf /var/lib/apt/lists/*
+
 # Production deps only
 COPY package.json ./
 RUN npm install --omit=dev && npm cache clean --force

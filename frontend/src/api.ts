@@ -368,6 +368,86 @@ export interface CreatedApiKey extends ApiKeyMeta {
   key: string;
 }
 
+export type RemoteSourceAuthType = "api_key" | "oauth2_client_credentials" | "custom";
+export type RemotePollStatus = "ok" | "auth_error" | "fetch_error" | "validation_rejects";
+
+export interface RemoteSourceMeta {
+  id: number;
+  name: string;
+  baseUrl: string;
+  authType: RemoteSourceAuthType;
+  enabled: boolean;
+  pollIntervalMinutes: number;
+  backfillFrom: string;
+  watermark: string | null;
+  lastPolledAt: string | null;
+  lastPollStatus: RemotePollStatus | null;
+  lastPollError: string | null;
+  rejectCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Write-only — never returned by the API, only ever sent. The admin already
+// knows the secret (typed it in from the remote platform's own admin panel),
+// so unlike a generated API key there's no "only chance to see it" to preserve.
+export type RemoteSourceAuthInput =
+  | { authType: "api_key"; apiKey: string; headerName?: string }
+  | {
+      authType: "oauth2_client_credentials";
+      tokenUrl: string;
+      clientId: string;
+      clientSecret: string;
+      scope?: string;
+    }
+  | { authType: "custom"; scriptBody: string; env: Record<string, string> };
+
+export interface CreateRemoteSourceInput {
+  name: string;
+  baseUrl: string;
+  pollIntervalMinutes: number;
+  backfillFrom: string;
+  auth: RemoteSourceAuthInput;
+}
+
+export interface UpdateRemoteSourceInput {
+  name?: string;
+  baseUrl?: string;
+  enabled?: boolean;
+  pollIntervalMinutes?: number;
+  /** Omitted entirely = credential unchanged; full replacement when provided. */
+  auth?: RemoteSourceAuthInput;
+}
+
+export interface PollSummary {
+  sourceId: number;
+  pagesRead: number;
+  accepted: number;
+  rejected: number;
+  status: RemotePollStatus;
+  watermark: string | null;
+  error?: string;
+}
+
+export interface RemoteSourceReject {
+  id: number;
+  remoteSourceId: number;
+  occurredAt: string;
+  callId: string | null;
+  validationError: string;
+  recordRaw: unknown;
+}
+
+export interface RemoteSourceRejectParams {
+  page?: number;
+  pageSize?: number;
+}
+
+export interface RemoteSourceRejectPage {
+  data: RemoteSourceReject[];
+  pagination: Pagination;
+}
+
 function qs(params: Record<string, string | number | undefined>): string {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -516,5 +596,30 @@ export const api = {
   auditLog: {
     list: (params: AuditLogParams) =>
       request<AuditLogPage>(`/admin/audit-log?${qs(params)}`),
+  },
+
+  remoteSources: {
+    list: () => request<{ data: RemoteSourceMeta[] }>(`/admin/remote-sources`),
+
+    create: (input: CreateRemoteSourceInput) =>
+      request<RemoteSourceMeta>(`/admin/remote-sources`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+
+    update: (id: number, input: UpdateRemoteSourceInput) =>
+      request<RemoteSourceMeta>(`/admin/remote-sources/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      }),
+
+    remove: (id: number) =>
+      request<void>(`/admin/remote-sources/${id}`, { method: "DELETE" }),
+
+    pollNow: (id: number) =>
+      request<PollSummary>(`/admin/remote-sources/${id}/poll`, { method: "POST" }),
+
+    rejects: (id: number, params: RemoteSourceRejectParams) =>
+      request<RemoteSourceRejectPage>(`/admin/remote-sources/${id}/rejects?${qs(params)}`),
   },
 };

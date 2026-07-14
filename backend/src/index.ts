@@ -18,6 +18,8 @@ import statisticsRouter from "./routes/statistics";
 import healthRouter from "./routes/health";
 import adminRouter from "./routes/admin";
 import authRouter from "./routes/auth";
+import { listRemoteSources, pruneRemoteSourceRejects, type RemoteSourceMeta } from "./services/remoteSourceService";
+import { pollRemoteSource } from "./services/remotePollService";
 
 const app = express();
 const BASE = config.apiBasePath;
@@ -101,6 +103,33 @@ app.use(
   })
 );
 
+// ─── Remote source polling ──────────────────────────────────────────────────
+// In-process setInterval, same choice as pruneAuditLog above — polling a
+// remote HTTP API needs no special binary, unlike the `backup` compose
+// service, which exists solely because it needs pg_dump/pg_restore. Ticks
+// every 60s and skips sources not yet due, rather than one setInterval per
+// source, since poll_interval_minutes is per-source and this is simpler than
+// managing N independent timers.
+function isRemoteSourceDue(source: RemoteSourceMeta, now: Date): boolean {
+  if (!source.lastPolledAt) return true;
+  const dueAt = new Date(source.lastPolledAt).getTime() + source.pollIntervalMinutes * 60_000;
+  return now.getTime() >= dueAt;
+}
+
+async function pollDueRemoteSources(): Promise<void> {
+  const sources = await listRemoteSources();
+  const due = sources.filter((s) => s.enabled && isRemoteSourceDue(s, new Date()));
+  // Sequential, not Promise.all — avoids N sources hammering the DB pool or
+  // making concurrent outbound calls at once from this one process.
+  for (const s of due) {
+    try {
+      await pollRemoteSource(s.id);
+    } catch (err) {
+      console.error(`Remote source poll failed (id=${s.id}):`, err);
+    }
+  }
+}
+
 // ─── 404 & error handlers ─────────────────────────────────────────────────────
 app.use(notFound);
 app.use(errorHandler);
@@ -122,6 +151,20 @@ async function start(): Promise<void> {
         console.error("Audit log prune failed:", err)
       );
     }, 24 * 60 * 60 * 1000);
+
+    await pruneRemoteSourceRejects(config.remoteSources.rejectsRetentionDays);
+    setInterval(() => {
+      pruneRemoteSourceRejects(config.remoteSources.rejectsRetentionDays).catch((err) =>
+        console.error("Remote source rejects prune failed:", err)
+      );
+    }, 24 * 60 * 60 * 1000);
+
+    // Not called synchronously here before app.listen the way the prunes
+    // above are — a slow/hanging remote fetch on boot shouldn't block
+    // startup. The first 60s tick after boot handles it instead.
+    setInterval(() => {
+      pollDueRemoteSources().catch((err) => console.error("Remote source poll cycle failed:", err));
+    }, 60_000);
 
     const server = app.listen(config.port, () => {
       console.log(
