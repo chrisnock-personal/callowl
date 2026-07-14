@@ -375,7 +375,12 @@ export interface CreatedApiKey extends ApiKeyMeta {
 }
 
 export type RemoteSourceAuthType = "api_key" | "oauth2_client_credentials" | "custom";
-export type RemotePollStatus = "ok" | "auth_error" | "fetch_error" | "validation_rejects";
+export type RemotePollStatus =
+  | "ok"
+  | "auth_error"
+  | "fetch_error"
+  | "validation_rejects"
+  | "skipped_locked";
 
 export interface RemoteSourceMeta {
   id: number;

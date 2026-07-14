@@ -2801,8 +2801,14 @@ function RemoteSourcesSection() {
     try {
       const summary = await api.remoteSources.pollNow(source.id);
       setMsg({
-        ok: summary.status === "ok" || summary.status === "validation_rejects",
-        text: `${source.name}: ${summary.accepted} accepted, ${summary.rejected} rejected (${summary.status})`,
+        ok:
+          summary.status === "ok" ||
+          summary.status === "validation_rejects" ||
+          summary.status === "skipped_locked",
+        text:
+          summary.status === "skipped_locked"
+            ? `${source.name}: already being polled by another instance`
+            : `${source.name}: ${summary.accepted} accepted, ${summary.rejected} rejected (${summary.status})`,
       });
       refresh();
     } catch (e: any) {

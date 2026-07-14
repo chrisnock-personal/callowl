@@ -2,6 +2,7 @@ import { callRecordSchema, type CallRecordInput } from "../schemas/cdr";
 import { ingestRecords } from "./ingestService";
 import { getAuthHeader } from "./remoteAuthService";
 import { runCustomScript } from "./remoteScriptRunner";
+import { tryClaimJob } from "../db/jobLock";
 import {
   getRemoteSourceForPolling,
   recordPollResult,
@@ -204,13 +205,41 @@ async function pollRemoteSourceImpl(sourceId: number): Promise<PollSummary> {
 // effects (e.g. deleting files off an SFTP server once processed). A caller
 // that arrives while a poll for the same source is already running gets that
 // same in-flight result instead of starting a second, duplicate execution.
+//
+// This only guards callers within *this* process, though — across replicas,
+// REMOTE_SOURCE_POLL_LEASE_MS below (via tryClaimJob) guards against a
+// different instance already polling the same source.
 const inFlightPolls = new Map<number, Promise<PollSummary>>();
+
+// Generous: covers a 'custom' script's own SCRIPT_TIMEOUT_MS + SCRIPT_KILL_GRACE_MS
+// (125s, remoteScriptRunner.ts) with headroom, and the HTTP path's slower but
+// still bounded worst case (MAX_PAGES_PER_CYCLE pages at up to REQUEST_TIMEOUT_MS
+// each). If a claiming replica dies mid-poll, another replica can pick the
+// source back up once this lease expires rather than waiting indefinitely.
+const REMOTE_SOURCE_POLL_LEASE_MS = 10 * 60_000;
 
 export function pollRemoteSource(sourceId: number): Promise<PollSummary> {
   const existing = inFlightPolls.get(sourceId);
   if (existing) return existing;
 
-  const run = pollRemoteSourceImpl(sourceId).finally(() => {
+  const run = (async (): Promise<PollSummary> => {
+    const claimed = await tryClaimJob(
+      `remote_source_poll:${sourceId}`,
+      REMOTE_SOURCE_POLL_LEASE_MS
+    );
+    if (!claimed) {
+      return {
+        sourceId,
+        pagesRead: 0,
+        accepted: 0,
+        rejected: 0,
+        status: "skipped_locked",
+        watermark: null,
+        error: "Another instance is already polling this source",
+      };
+    }
+    return pollRemoteSourceImpl(sourceId);
+  })().finally(() => {
     inFlightPolls.delete(sourceId);
   });
   inFlightPolls.set(sourceId, run);

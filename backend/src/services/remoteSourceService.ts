@@ -2,7 +2,17 @@ import { query, queryOne } from "../db/pool";
 import { encryptSecret, decryptSecret } from "./cryptoService";
 
 export type RemoteSourceAuthType = "api_key" | "oauth2_client_credentials" | "custom";
-export type RemotePollStatus = "ok" | "auth_error" | "fetch_error" | "validation_rejects";
+// "skipped_locked" only ever appears in a transient PollSummary (another
+// replica already held the poll lease for this source — see
+// remotePollService.ts's tryClaimJob usage) — it's never persisted as
+// lastPollStatus, since the replica that gets skipped never calls
+// recordPollResult.
+export type RemotePollStatus =
+  | "ok"
+  | "auth_error"
+  | "fetch_error"
+  | "validation_rejects"
+  | "skipped_locked";
 
 export interface RemoteSourceMeta {
   id: number;

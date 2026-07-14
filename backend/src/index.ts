@@ -7,6 +7,7 @@ import swaggerUi from "swagger-ui-express";
 import { config } from "./config";
 import { testConnection, closePool } from "./db/pool";
 import { runMigrations } from "./db/migrate";
+import { tryClaimJob } from "./db/jobLock";
 import { seedExamples } from "./db/seed";
 import { seedAdmin } from "./db/seedAdmin";
 import { pruneAuditLog } from "./services/auditService";
@@ -144,19 +145,36 @@ async function start(): Promise<void> {
 
     // Prune once on boot, then daily — a plain SQL delete, so no separate
     // sidecar service is needed the way scheduled backups need one (those
-    // need pg_dump, which isn't in this image).
-    await pruneAuditLog(config.auditLog.retentionDays);
+    // need pg_dump, which isn't in this image). tryClaimJob (db/jobLock.ts)
+    // makes this safe across N replicas: only whichever replica wins the
+    // claim actually runs the prune, others skip this tick. A 5-minute lease
+    // comfortably covers a real prune while still handing off quickly if the
+    // claiming replica dies mid-run.
+    const AUDIT_LOG_PRUNE_LEASE_MS = 5 * 60_000;
+    const REMOTE_REJECTS_PRUNE_LEASE_MS = 5 * 60_000;
+
+    if (await tryClaimJob("audit_log_prune", AUDIT_LOG_PRUNE_LEASE_MS)) {
+      await pruneAuditLog(config.auditLog.retentionDays);
+    }
     setInterval(() => {
-      pruneAuditLog(config.auditLog.retentionDays).catch((err) =>
-        console.error("Audit log prune failed:", err)
-      );
+      (async () => {
+        if (await tryClaimJob("audit_log_prune", AUDIT_LOG_PRUNE_LEASE_MS)) {
+          await pruneAuditLog(config.auditLog.retentionDays);
+        }
+      })().catch((err) => console.error("Audit log prune failed:", err));
     }, 24 * 60 * 60 * 1000);
 
-    await pruneRemoteSourceRejects(config.remoteSources.rejectsRetentionDays);
+    if (await tryClaimJob("remote_source_rejects_prune", REMOTE_REJECTS_PRUNE_LEASE_MS)) {
+      await pruneRemoteSourceRejects(config.remoteSources.rejectsRetentionDays);
+    }
     setInterval(() => {
-      pruneRemoteSourceRejects(config.remoteSources.rejectsRetentionDays).catch((err) =>
-        console.error("Remote source rejects prune failed:", err)
-      );
+      (async () => {
+        if (
+          await tryClaimJob("remote_source_rejects_prune", REMOTE_REJECTS_PRUNE_LEASE_MS)
+        ) {
+          await pruneRemoteSourceRejects(config.remoteSources.rejectsRetentionDays);
+        }
+      })().catch((err) => console.error("Remote source rejects prune failed:", err));
     }, 24 * 60 * 60 * 1000);
 
     // Not called synchronously here before app.listen the way the prunes
