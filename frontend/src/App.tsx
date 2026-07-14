@@ -1194,6 +1194,15 @@ function HeaderMenu({
   };
 
   const latest = backups?.data[0];
+  // One missed scheduled cycle is noise (a slow dump, a brief DB blip); two
+  // in a row is a real signal worth flagging rather than staying silent —
+  // same reasoning as the failed-attempt marker itself (scripts/backup.sh).
+  const backupIsStale =
+    !!backups &&
+    ((latest &&
+      Date.now() - new Date(latest.createdAt).getTime() >
+        2 * backups.intervalHours * 3_600_000) ||
+      backups.lastAttempt?.status === "failed");
 
   return (
     <div style={{ position: "relative" }}>
@@ -1319,9 +1328,22 @@ function HeaderMenu({
                 </div>
               ) : (
                 <>
-                  <div style={{ fontSize: 13, color: C.ink, fontWeight: 600 }}>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: backupIsStale ? C.rose : C.ink,
+                    }}
+                  >
+                    {backupIsStale && "⚠ "}
                     {latest ? `Last backup: ${fmtRelative(latest.createdAt)}` : "No backups yet"}
                   </div>
+                  {backups.lastAttempt?.status === "failed" && (
+                    <div style={{ fontSize: 11.5, color: C.rose, marginTop: 2 }}>
+                      Last scheduled attempt ({fmtRelative(backups.lastAttempt.at)}) failed —
+                      check `podman logs opencdr-backup`.
+                    </div>
+                  )}
                   <div
                     style={{ fontSize: 11.5, color: C.textMuted, fontFamily: MONO, marginTop: 2 }}
                   >

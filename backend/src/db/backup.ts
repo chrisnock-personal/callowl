@@ -121,3 +121,27 @@ export function listBackups(): BackupResult[] {
 export function isValidBackupFilename(filename: string): boolean {
   return /^opencdr-\d{8}T\d{6}Z\.dump$/.test(filename);
 }
+
+export interface LastAttempt {
+  at: string;
+  status: "ok" | "failed";
+}
+
+// Written by scripts/backup.sh on every scheduled run, success or failure —
+// the only way a broken backup loop (disk full, DB unreachable, permissions)
+// becomes visible anywhere other than `podman logs`. On-demand backups
+// triggered from the dashboard/API don't touch this file; it reflects the
+// scheduled `backup` service specifically.
+export function getLastAttempt(): LastAttempt | null {
+  const dir = config.backups.dir;
+  if (!dir) return null;
+  const file = path.join(dir, ".last-attempt");
+  if (!fs.existsSync(file)) return null;
+  const line = fs.readFileSync(file, "utf-8").trim();
+  const spaceIdx = line.indexOf(" ");
+  if (spaceIdx === -1) return null;
+  const at = line.slice(0, spaceIdx);
+  const status = line.slice(spaceIdx + 1);
+  if (status !== "ok" && status !== "failed") return null;
+  return { at, status };
+}

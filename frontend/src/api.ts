@@ -289,11 +289,17 @@ export interface BackupFile {
   createdAt: string;
 }
 
+export interface BackupLastAttempt {
+  at: string;
+  status: "ok" | "failed";
+}
+
 export interface BackupStatus {
   data: BackupFile[];
   retentionDays: number;
   intervalHours: number;
   configured: boolean;
+  lastAttempt: BackupLastAttempt | null;
 }
 
 export type ActorType = "user" | "ingest_key" | "admin_key" | "anonymous";

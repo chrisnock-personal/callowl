@@ -12,6 +12,7 @@ import {
   listBackups,
   isValidBackupFilename,
   looksLikePgDumpCustomFormat,
+  getLastAttempt,
 } from "../db/backup";
 import { createUser, listUsers, updateUser, deleteUser, UserPatch } from "../services/authService";
 import { listAuditLog } from "../services/auditService";
@@ -41,6 +42,11 @@ router.get("/backups", requireAuth, (_req: Request, res: Response) => {
     retentionDays: config.backups.retentionDays,
     intervalHours: config.backups.intervalHours,
     configured: !!config.backups.dir,
+    // Written by the scheduled `backup` service on every run (scripts/backup.sh),
+    // success or failure — lets the dashboard flag a broken backup loop instead
+    // of that only ever showing up in `podman logs`. Absent for a deployment
+    // that's never had the scheduled service run yet (on-demand-only usage).
+    lastAttempt: getLastAttempt(),
   });
 });
 
