@@ -14,7 +14,15 @@ import {
   looksLikePgDumpCustomFormat,
   getLastAttempt,
 } from "../db/backup";
-import { createUser, listUsers, updateUser, deleteUser, UserPatch } from "../services/authService";
+import {
+  createUser,
+  listUsers,
+  updateUser,
+  deleteUser,
+  getUserById,
+  UserPatch,
+} from "../services/authService";
+import { adminResetMfa } from "../services/mfaService";
 import { listAuditLog } from "../services/auditService";
 import {
   createRemoteSource,
@@ -177,6 +185,28 @@ router.patch("/users/:id", requireAuth, requireAdmin, async (req: Request, res: 
     next(err);
   }
 });
+
+// POST /admin/users/:id/mfa/reset — admin escape hatch for "lost my device",
+// same trust level as the password reset already available via PATCH above.
+router.post(
+  "/users/:id/mfa/reset",
+  requireAuth,
+  requireAdmin,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (Number.isNaN(id)) throw createError("Invalid user id", 400);
+
+      const user = await getUserById(id);
+      if (!user) throw createError("User not found", 404);
+
+      await adminResetMfa(id);
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 router.delete("/users/:id", requireAuth, requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {

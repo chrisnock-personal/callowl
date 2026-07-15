@@ -69,6 +69,13 @@ services:
       # sources) — encrypts that source's own credential at rest.
       REMOTE_SOURCE_ENC_KEY: "${REMOTE_SOURCE_ENC_KEY:-}"
       REMOTE_SOURCE_REJECTS_RETENTION_DAYS: "${REMOTE_SOURCE_REJECTS_RETENTION_DAYS:-90}"
+      # Per-account login lockout, independent of the per-IP rate limit on
+      # POST /auth/login.
+      LOGIN_LOCKOUT_THRESHOLD: "${LOGIN_LOCKOUT_THRESHOLD:-5}"
+      LOGIN_LOCKOUT_DURATION_MINUTES: "${LOGIN_LOCKOUT_DURATION_MINUTES:-15}"
+      # Only required if a user enables MFA (⋯ menu → Security) — encrypts
+      # that user's TOTP secret at rest.
+      MFA_ENC_KEY: "${MFA_ENC_KEY:-}"
     volumes:
       # Read-write: the on-demand backup/restore endpoints write and read here,
       # alongside the scheduled `backup` service. :z (shared label) relabels

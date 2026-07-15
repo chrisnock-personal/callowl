@@ -339,6 +339,22 @@ export interface AuthUser {
   role: UserRole;
   allowedGroups: string[] | null;
   allowedSourcePlatformIds: string[] | null;
+  mfaEnabled: boolean;
+}
+
+// POST /auth/login returns this instead of a full AuthUser when the account
+// has MFA enabled — pendingToken is submitted along with a code to
+// POST /auth/login/mfa to actually complete the login.
+export interface MfaRequiredResponse {
+  mfaRequired: true;
+  pendingToken: string;
+}
+
+export type LoginResult = AuthUser | MfaRequiredResponse;
+
+export interface MfaEnrollment {
+  secret: string;
+  otpauthUri: string;
 }
 
 export interface ManagedUser extends AuthUser {
@@ -563,14 +579,36 @@ export const api = {
   },
 
   login: (username: string, password: string) =>
-    request<AuthUser>(`/auth/login`, {
+    request<LoginResult>(`/auth/login`, {
       method: "POST",
       body: JSON.stringify({ username, password }),
+    }),
+
+  loginMfa: (pendingToken: string, code: string) =>
+    request<AuthUser>(`/auth/login/mfa`, {
+      method: "POST",
+      body: JSON.stringify({ pendingToken, code }),
     }),
 
   logout: () => request<{ ok: boolean }>(`/auth/logout`, { method: "POST" }),
 
   me: () => request<AuthUser>(`/auth/me`),
+
+  mfa: {
+    setup: () => request<MfaEnrollment>(`/auth/mfa/setup`, { method: "POST" }),
+
+    confirm: (code: string) =>
+      request<{ recoveryCodes: string[] }>(`/auth/mfa/confirm`, {
+        method: "POST",
+        body: JSON.stringify({ code }),
+      }),
+
+    disable: (password: string, code: string) =>
+      request<{ ok: boolean }>(`/auth/mfa/disable`, {
+        method: "POST",
+        body: JSON.stringify({ password, code }),
+      }),
+  },
 
   users: {
     list: () => request<{ data: ManagedUser[] }>(`/admin/users`),
@@ -589,6 +627,9 @@ export const api = {
 
     remove: (id: number) =>
       request<void>(`/admin/users/${id}`, { method: "DELETE" }),
+
+    resetMfa: (id: number) =>
+      request<{ ok: boolean }>(`/admin/users/${id}/mfa/reset`, { method: "POST" }),
   },
 
   apiKeys: {

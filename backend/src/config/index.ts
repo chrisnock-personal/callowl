@@ -72,6 +72,23 @@ const envSchema = z.object({
   // How long remote_source_rejects entries are kept — pruned once on boot
   // and daily thereafter (see index.ts). Mirrors AUDIT_LOG_RETENTION_DAYS.
   REMOTE_SOURCE_REJECTS_RETENTION_DAYS: z.string().default("90"),
+
+  // Per-account login lockout (services/authService.ts), independent of the
+  // per-IP loginRateLimit (index.ts) — closes the "slow, patient attempt
+  // spread across many source IPs" gap that IP-based rate limiting alone
+  // can't. LOGIN_LOCKOUT_DURATION_MINUTES mirrors loginRateLimit's own
+  // 15-minute window for consistency.
+  LOGIN_LOCKOUT_THRESHOLD: z.string().default("5"),
+  LOGIN_LOCKOUT_DURATION_MINUTES: z.string().default("15"),
+
+  // Reversible-encryption key for TOTP MFA secrets (services/mfaService.ts,
+  // via cryptoService.ts) — has to be read back to verify codes, unlike a
+  // password hash. Deliberately separate from REMOTE_SOURCE_ENC_KEY: a
+  // deployment that only wants MFA shouldn't need a key named for an
+  // unrelated feature, and rotating one shouldn't force re-enrolling the
+  // other. Optional at boot, same posture as REMOTE_SOURCE_ENC_KEY — gated
+  // at the point of use (enrolling MFA while this is unset returns a 501).
+  MFA_ENC_KEY: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -126,6 +143,15 @@ export const config = {
   remoteSources: {
     encryptionKey: env.REMOTE_SOURCE_ENC_KEY,
     rejectsRetentionDays: parseInt(env.REMOTE_SOURCE_REJECTS_RETENTION_DAYS, 10),
+  },
+
+  loginLockout: {
+    threshold: parseInt(env.LOGIN_LOCKOUT_THRESHOLD, 10),
+    durationMinutes: parseInt(env.LOGIN_LOCKOUT_DURATION_MINUTES, 10),
+  },
+
+  mfa: {
+    encryptionKey: env.MFA_ENC_KEY,
   },
 
   db: {

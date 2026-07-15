@@ -1,5 +1,5 @@
 import { query, queryOne } from "../db/pool";
-import { encryptSecret, decryptSecret } from "./cryptoService";
+import { encryptSecret, decryptSecret, remoteSourceEncryptionKey } from "./cryptoService";
 
 export type RemoteSourceAuthType = "api_key" | "oauth2_client_credentials" | "custom";
 // "skipped_locked" only ever appears in a transient PollSummary (another
@@ -120,25 +120,27 @@ export type RemoteSourceAuth =
   | { authType: "custom"; scriptBody: string; env: Record<string, string> };
 
 function buildAuthConfig(auth: RemoteSourceAuthInput): Record<string, unknown> {
+  const key = remoteSourceEncryptionKey();
   if (auth.authType === "api_key") {
-    return { apiKeyEncrypted: encryptSecret(auth.apiKey), headerName: auth.headerName ?? "X-API-Key" };
+    return { apiKeyEncrypted: encryptSecret(auth.apiKey, key), headerName: auth.headerName ?? "X-API-Key" };
   }
   if (auth.authType === "oauth2_client_credentials") {
     return {
       tokenUrl: auth.tokenUrl,
       clientId: auth.clientId,
-      clientSecretEncrypted: encryptSecret(auth.clientSecret),
+      clientSecretEncrypted: encryptSecret(auth.clientSecret, key),
       scope: auth.scope ?? null,
     };
   }
-  return { scriptBody: auth.scriptBody, envEncrypted: encryptSecret(JSON.stringify(auth.env)) };
+  return { scriptBody: auth.scriptBody, envEncrypted: encryptSecret(JSON.stringify(auth.env), key) };
 }
 
 function toAuth(authType: string, authConfig: Record<string, unknown>): RemoteSourceAuth {
+  const key = remoteSourceEncryptionKey();
   if (authType === "api_key") {
     return {
       authType: "api_key",
-      apiKey: decryptSecret(authConfig.apiKeyEncrypted as string),
+      apiKey: decryptSecret(authConfig.apiKeyEncrypted as string, key),
       headerName: (authConfig.headerName as string) ?? "X-API-Key",
     };
   }
@@ -147,14 +149,14 @@ function toAuth(authType: string, authConfig: Record<string, unknown>): RemoteSo
       authType: "oauth2_client_credentials",
       tokenUrl: authConfig.tokenUrl as string,
       clientId: authConfig.clientId as string,
-      clientSecret: decryptSecret(authConfig.clientSecretEncrypted as string),
+      clientSecret: decryptSecret(authConfig.clientSecretEncrypted as string, key),
       scope: (authConfig.scope as string | null) ?? undefined,
     };
   }
   return {
     authType: "custom",
     scriptBody: authConfig.scriptBody as string,
-    env: JSON.parse(decryptSecret(authConfig.envEncrypted as string)),
+    env: JSON.parse(decryptSecret(authConfig.envEncrypted as string, key)),
   };
 }
 

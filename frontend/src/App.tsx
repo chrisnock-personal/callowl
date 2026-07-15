@@ -20,6 +20,7 @@ import {
   IvrBreakdown,
   BackupStatus,
   AuthUser,
+  MfaEnrollment,
   ManagedUser,
   ApiKeyMeta,
   AuditLogEntry,
@@ -722,6 +723,7 @@ export default function App() {
         health={health}
         onIngest={() => setShowIngest(true)}
         authUser={authUser}
+        onAuthUserChange={setAuthUser}
         onLogout={handleLogout}
       />
 
@@ -853,12 +855,36 @@ function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Set once POST /auth/login comes back with mfaRequired — switches the
+  // form to a second step (code entry) instead of username/password.
+  const [pendingToken, setPendingToken] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const user = await api.login(username, password);
+      const result = await api.login(username, password);
+      if ("mfaRequired" in result) {
+        setPendingToken(result.pendingToken);
+        return;
+      }
+      onLogin(result);
+    } catch (e: any) {
+      setError(e.message ?? "Login failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitMfa = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const user = await api.loginMfa(pendingToken!, code);
       onLogin(user);
     } catch (e: any) {
       setError(e.message ?? "Login failed");
@@ -902,7 +928,7 @@ function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
       }}
     >
       <form
-        onSubmit={submit}
+        onSubmit={pendingToken ? submitMfa : submit}
         style={{
           width: 360,
           maxWidth: "100%",
@@ -933,29 +959,68 @@ function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
             <div style={{ fontWeight: 750, fontSize: 16, letterSpacing: -0.2 }}>
               Open CDR Platform
             </div>
-            <div style={{ fontSize: 11.5, color: C.textMuted }}>Sign in to continue</div>
+            <div style={{ fontSize: 11.5, color: C.textMuted }}>
+              {pendingToken ? "Enter your verification code" : "Sign in to continue"}
+            </div>
           </div>
         </div>
 
-        <div style={{ marginBottom: 14 }}>
-          <label style={labelStyle}>Username</label>
-          <input
-            type="text"
-            autoFocus
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            style={inputStyle}
-          />
-        </div>
-        <div style={{ marginBottom: 18 }}>
-          <label style={labelStyle}>Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={inputStyle}
-          />
-        </div>
+        {pendingToken ? (
+          <div style={{ marginBottom: 18 }}>
+            <label style={labelStyle}>
+              {useRecoveryCode ? "Recovery code" : "6-digit code"}
+            </label>
+            <input
+              type="text"
+              autoFocus
+              autoComplete="one-time-code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              style={{ ...inputStyle, fontFamily: MONO }}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                setUseRecoveryCode((v) => !v);
+                setCode("");
+                setError(null);
+              }}
+              style={{
+                marginTop: 8,
+                border: "none",
+                background: "transparent",
+                color: C.accentDeep,
+                fontSize: 12,
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              {useRecoveryCode ? "Use an authenticator code instead" : "Use a recovery code instead"}
+            </button>
+          </div>
+        ) : (
+          <>
+            <div style={{ marginBottom: 14 }}>
+              <label style={labelStyle}>Username</label>
+              <input
+                type="text"
+                autoFocus
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                style={inputStyle}
+              />
+            </div>
+            <div style={{ marginBottom: 18 }}>
+              <label style={labelStyle}>Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                style={inputStyle}
+              />
+            </div>
+          </>
+        )}
 
         {error && (
           <div
@@ -974,21 +1039,49 @@ function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
 
         <button
           type="submit"
-          disabled={busy || !username || !password}
+          disabled={busy || (pendingToken ? !code : !username || !password)}
           style={{
             width: "100%",
             padding: "10px 14px",
             borderRadius: 8,
             border: "none",
-            background: busy || !username || !password ? C.borderStrong : C.accent,
+            background:
+              busy || (pendingToken ? !code : !username || !password)
+                ? C.borderStrong
+                : C.accent,
             color: "#fff",
             fontSize: 14,
             fontWeight: 650,
-            cursor: busy || !username || !password ? "default" : "pointer",
+            cursor: busy || (pendingToken ? !code : !username || !password) ? "default" : "pointer",
           }}
         >
-          {busy ? "Signing in…" : "Sign in"}
+          {busy ? "Signing in…" : pendingToken ? "Verify" : "Sign in"}
         </button>
+
+        {pendingToken && (
+          <button
+            type="button"
+            onClick={() => {
+              setPendingToken(null);
+              setCode("");
+              setUseRecoveryCode(false);
+              setError(null);
+            }}
+            style={{
+              width: "100%",
+              marginTop: 8,
+              padding: "8px 14px",
+              borderRadius: 8,
+              border: "none",
+              background: "transparent",
+              color: C.textMuted,
+              fontSize: 12.5,
+              cursor: "pointer",
+            }}
+          >
+            ← Back
+          </button>
+        )}
       </form>
     </div>
   );
@@ -999,11 +1092,13 @@ function Header({
   health,
   onIngest,
   authUser,
+  onAuthUserChange,
   onLogout,
 }: {
   health: { status: string; apiVersion: string } | null;
   onIngest: () => void;
   authUser: AuthUser;
+  onAuthUserChange: (user: AuthUser) => void;
   onLogout: () => void;
 }) {
   const ok = health?.status === "healthy";
@@ -1074,7 +1169,7 @@ function Header({
             />
             {ok ? "API healthy" : "API unreachable"}
           </span>
-          <HeaderMenu authUser={authUser} onLogout={onLogout} />
+          <HeaderMenu authUser={authUser} onAuthUserChange={onAuthUserChange} onLogout={onLogout} />
           <button
             onClick={onIngest}
             style={{
@@ -1112,9 +1207,11 @@ function fmtRelative(iso: string): string {
 // button for every admin-ish thing (backups today, more later).
 function HeaderMenu({
   authUser,
+  onAuthUserChange,
   onLogout,
 }: {
   authUser: AuthUser;
+  onAuthUserChange: (user: AuthUser) => void;
   onLogout: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1284,6 +1381,8 @@ function HeaderMenu({
                 Log out
               </button>
             </div>
+            <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
+            <SecuritySection authUser={authUser} onAuthUserChange={onAuthUserChange} />
             <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
             <ApiKeysSection />
             <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
@@ -1532,6 +1631,485 @@ function HeaderMenu({
         </>
       )}
       {showAuditLog && <AuditLogModal onClose={() => setShowAuditLog(false)} />}
+    </div>
+  );
+}
+
+// Self-service MFA — every logged-in user manages their own second factor.
+// Admins additionally get a reset action for the "lost my device" case (see
+// UsersSection). No QR code rendering — the raw secret + otpauth:// URI as
+// copyable text is fully functional (every authenticator app supports
+// manual entry) without pulling in a second new dependency just for this.
+function SecuritySection({
+  authUser,
+  onAuthUserChange,
+}: {
+  authUser: AuthUser;
+  onAuthUserChange: (user: AuthUser) => void;
+}) {
+  const [showSetup, setShowSetup] = useState(false);
+  const [showDisable, setShowDisable] = useState(false);
+
+  return (
+    <div style={{ padding: "8px 10px" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 6,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 10.5,
+            letterSpacing: 0.5,
+            textTransform: "uppercase",
+            color: C.textMuted,
+            fontWeight: 700,
+          }}
+        >
+          Security
+        </div>
+        <button
+          onClick={() => (authUser.mfaEnabled ? setShowDisable(true) : setShowSetup(true))}
+          style={{
+            border: "none",
+            background: "transparent",
+            color: authUser.mfaEnabled ? C.rose : C.accentDeep,
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: 650,
+            padding: 0,
+          }}
+        >
+          {authUser.mfaEnabled ? "Disable MFA" : "Enable MFA"}
+        </button>
+      </div>
+      <div style={{ fontSize: 12.5, color: C.textMid }}>
+        Two-factor authentication:{" "}
+        <span style={{ fontWeight: 650, color: authUser.mfaEnabled ? C.teal : C.textMuted }}>
+          {authUser.mfaEnabled ? "Enabled" : "Not enabled"}
+        </span>
+      </div>
+
+      {showSetup && (
+        <MfaSetupModal
+          onClose={() => setShowSetup(false)}
+          onEnabled={() => {
+            setShowSetup(false);
+            onAuthUserChange({ ...authUser, mfaEnabled: true });
+          }}
+        />
+      )}
+      {showDisable && (
+        <MfaDisableModal
+          onClose={() => setShowDisable(false)}
+          onDisabled={() => {
+            setShowDisable(false);
+            onAuthUserChange({ ...authUser, mfaEnabled: false });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function MfaSetupModal({ onClose, onEnabled }: { onClose: () => void; onEnabled: () => void }) {
+  const [enrollment, setEnrollment] = useState<MfaEnrollment | null>(null);
+  const [code, setCode] = useState("");
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    api.mfa
+      .setup()
+      .then(setEnrollment)
+      .catch((e: any) => setMsg({ ok: false, text: e.message ?? "Couldn’t start MFA setup" }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const confirm = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await api.mfa.confirm(code);
+      setRecoveryCodes(res.recoveryCodes);
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Invalid code" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const secretGrouped = enrollment?.secret.match(/.{1,4}/g)?.join(" ") ?? "";
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,22,32,0.38)",
+        zIndex: 50,
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(440px, 100%)",
+          background: C.surface,
+          borderRadius: 14,
+          overflow: "hidden",
+          boxShadow: "0 24px 60px rgba(15,22,32,0.3)",
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: `1px solid ${C.border}`,
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>
+              {recoveryCodes ? "Save your recovery codes" : "Enable two-factor authentication"}
+            </div>
+            {!recoveryCodes && (
+              <div style={{ fontSize: 12.5, color: C.textMuted, marginTop: 2 }}>
+                Scan or enter this into your authenticator app, then confirm a code.
+              </div>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              marginLeft: "auto",
+              border: "none",
+              background: "transparent",
+              fontSize: 22,
+              cursor: "pointer",
+              color: C.textMuted,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        <div style={{ padding: 20 }}>
+          {recoveryCodes ? (
+            <>
+              <div style={{ fontSize: 12.5, color: C.textMuted, marginBottom: 10 }}>
+                Each code works once, if you lose access to your authenticator. They won’t be
+                shown again.
+              </div>
+              <div
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 13,
+                  color: C.ink,
+                  background: C.surfaceAlt,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 8,
+                  padding: 12,
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 6,
+                  userSelect: "all",
+                }}
+              >
+                {recoveryCodes.map((c) => (
+                  <div key={c}>{c}</div>
+                ))}
+              </div>
+              <button
+                onClick={onEnabled}
+                style={{
+                  width: "100%",
+                  marginTop: 16,
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: C.accent,
+                  color: "#fff",
+                  fontSize: 14,
+                  fontWeight: 650,
+                  cursor: "pointer",
+                }}
+              >
+                I’ve saved these — done
+              </button>
+            </>
+          ) : !enrollment ? (
+            <div style={{ fontSize: 12.5, color: C.textMuted }}>
+              {msg ? msg.text : "Loading…"}
+            </div>
+          ) : (
+            <>
+              <div
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 15,
+                  letterSpacing: 1,
+                  textAlign: "center",
+                  color: C.ink,
+                  background: C.surfaceAlt,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 8,
+                  padding: 12,
+                  marginBottom: 8,
+                  userSelect: "all",
+                }}
+              >
+                {secretGrouped}
+              </div>
+              <details style={{ marginBottom: 14 }}>
+                <summary style={{ fontSize: 11.5, color: C.textMuted, cursor: "pointer" }}>
+                  otpauth:// URI
+                </summary>
+                <div
+                  style={{
+                    fontFamily: MONO,
+                    fontSize: 10.5,
+                    color: C.textMid,
+                    marginTop: 6,
+                    wordBreak: "break-all",
+                    userSelect: "all",
+                  }}
+                >
+                  {enrollment.otpauthUri}
+                </div>
+              </details>
+
+              <label
+                style={{
+                  fontSize: 10.5,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                  color: C.textMuted,
+                  fontWeight: 700,
+                  marginBottom: 5,
+                  display: "block",
+                }}
+              >
+                6-digit code
+              </label>
+              <input
+                type="text"
+                autoFocus
+                autoComplete="one-time-code"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: `1px solid ${C.border}`,
+                  background: C.surface,
+                  fontSize: 14,
+                  fontFamily: MONO,
+                  outline: "none",
+                  boxSizing: "border-box",
+                  marginBottom: 12,
+                }}
+              />
+
+              {msg && (
+                <div
+                  style={{
+                    marginBottom: 12,
+                    padding: "9px 11px",
+                    borderRadius: 8,
+                    background: msg.ok ? C.tealSoft : C.roseSoft,
+                    color: msg.ok ? C.teal : C.rose,
+                    fontSize: 12.5,
+                  }}
+                >
+                  {msg.text}
+                </div>
+              )}
+
+              <button
+                onClick={confirm}
+                disabled={busy || !code}
+                style={{
+                  width: "100%",
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: busy || !code ? C.borderStrong : C.accent,
+                  color: "#fff",
+                  fontSize: 14,
+                  fontWeight: 650,
+                  cursor: busy || !code ? "default" : "pointer",
+                }}
+              >
+                {busy ? "Confirming…" : "Confirm"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MfaDisableModal({
+  onClose,
+  onDisabled,
+}: {
+  onClose: () => void;
+  onDisabled: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const smallInput: React.CSSProperties = {
+    width: "100%",
+    padding: "10px 12px",
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    background: C.surface,
+    fontSize: 14,
+    fontFamily: SANS,
+    outline: "none",
+    boxSizing: "border-box",
+    marginBottom: 12,
+  };
+  const labelStyle: React.CSSProperties = {
+    fontSize: 10.5,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: C.textMuted,
+    fontWeight: 700,
+    marginBottom: 5,
+    display: "block",
+  };
+
+  const submit = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.mfa.disable(password, code);
+      onDisabled();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Couldn’t disable MFA" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,22,32,0.38)",
+        zIndex: 50,
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(380px, 100%)",
+          background: C.surface,
+          borderRadius: 14,
+          overflow: "hidden",
+          boxShadow: "0 24px 60px rgba(15,22,32,0.3)",
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: `1px solid ${C.border}`,
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Disable two-factor authentication</div>
+            <div style={{ fontSize: 12.5, color: C.textMuted, marginTop: 2 }}>
+              Confirm your password and a current code (or a recovery code).
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              marginLeft: "auto",
+              border: "none",
+              background: "transparent",
+              fontSize: 22,
+              cursor: "pointer",
+              color: C.textMuted,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        <div style={{ padding: 20 }}>
+          <label style={labelStyle}>Password</label>
+          <input
+            type="password"
+            autoFocus
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            style={smallInput}
+          />
+          <label style={labelStyle}>Code</label>
+          <input
+            type="text"
+            autoComplete="one-time-code"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            style={{ ...smallInput, fontFamily: MONO }}
+          />
+
+          {msg && (
+            <div
+              style={{
+                marginBottom: 12,
+                padding: "9px 11px",
+                borderRadius: 8,
+                background: C.roseSoft,
+                color: C.rose,
+                fontSize: 12.5,
+              }}
+            >
+              {msg.text}
+            </div>
+          )}
+
+          <button
+            onClick={submit}
+            disabled={busy || !password || !code}
+            style={{
+              width: "100%",
+              padding: "10px 14px",
+              borderRadius: 8,
+              border: "none",
+              background: busy || !password || !code ? C.borderStrong : C.rose,
+              color: "#fff",
+              fontSize: 14,
+              fontWeight: 650,
+              cursor: busy || !password || !code ? "default" : "pointer",
+            }}
+          >
+            {busy ? "Disabling…" : "Disable MFA"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1860,6 +2438,25 @@ function UsersSection({ currentUsername }: { currentUsername: string }) {
     }
   };
 
+  // "Lost my device" escape hatch — clears MFA so the user can log in with
+  // just a password again and re-enroll if they want to.
+  const handleResetMfa = async (user: ManagedUser) => {
+    if (
+      !window.confirm(
+        `Reset MFA for "${user.username}"? They'll be able to log in with just their password until they re-enroll.`
+      )
+    ) {
+      return;
+    }
+    setMsg(null);
+    try {
+      await api.users.resetMfa(user.id);
+      refresh();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Couldn’t reset MFA" });
+    }
+  };
+
   const startEdit = (user: ManagedUser) => {
     setShowAdd(false);
     setMsg(null);
@@ -2050,6 +2647,12 @@ function UsersSection({ currentUsername }: { currentUsername: string }) {
                   <div style={{ color: C.ink, fontWeight: 600 }}>
                     {u.username}{" "}
                     <span style={{ color: C.textMuted, fontWeight: 500 }}>· {u.role}</span>
+                    {u.mfaEnabled && (
+                      <span style={{ color: C.teal, fontWeight: 600 }} title="MFA enabled">
+                        {" "}
+                        · MFA
+                      </span>
+                    )}
                   </div>
                   <div
                     style={{
@@ -2079,6 +2682,23 @@ function UsersSection({ currentUsername }: { currentUsername: string }) {
                 >
                   Edit
                 </button>
+                {u.mfaEnabled && (
+                  <button
+                    onClick={() => handleResetMfa(u)}
+                    title={`Reset MFA for ${u.username}`}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: C.amber,
+                      cursor: "pointer",
+                      fontSize: 12,
+                      flexShrink: 0,
+                      padding: "1px 3px",
+                    }}
+                  >
+                    Reset MFA
+                  </button>
+                )}
                 {u.username !== currentUsername && (
                   <button
                     onClick={() => handleDelete(u)}

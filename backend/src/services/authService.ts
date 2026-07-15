@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { query, queryOne } from "../db/pool";
+import { config } from "../config";
 
 export type UserRole = "admin" | "viewer";
 
@@ -11,6 +12,7 @@ export interface User {
   allowedGroups: string[] | null;
   allowedSourcePlatformIds: string[] | null;
   createdAt: string;
+  mfaEnabled: boolean;
 }
 
 interface UserRow {
@@ -21,9 +23,10 @@ interface UserRow {
   allowed_groups: string[] | null;
   allowed_source_platform_ids: string[] | null;
   created_at: string;
+  mfa_enabled: boolean;
 }
 
-const USER_COLUMNS = `id::text, username, password_hash, role, allowed_groups, allowed_source_platform_ids, created_at`;
+const USER_COLUMNS = `id::text, username, password_hash, role, allowed_groups, allowed_source_platform_ids, created_at, mfa_enabled`;
 
 function toUser(row: UserRow): User {
   return {
@@ -33,6 +36,7 @@ function toUser(row: UserRow): User {
     allowedGroups: row.allowed_groups,
     allowedSourcePlatformIds: row.allowed_source_platform_ids,
     createdAt: row.created_at,
+    mfaEnabled: row.mfa_enabled,
   };
 }
 
@@ -137,6 +141,90 @@ export async function verifyPassword(username: string, password: string): Promis
   if (!row) return null;
   const ok = await bcrypt.compare(password, row.password_hash);
   return ok ? toUser(row) : null;
+}
+
+// ─── Login lockout ──────────────────────────────────────────────────────────
+// Per-account, on top of the per-IP loginRateLimit (index.ts) — closes the
+// "slow, patient attempt spread across many source IPs" gap IP-based rate
+// limiting alone can't. Keyed by the *submitted username string*, not a
+// resolved user id, including usernames that don't exist: if only real
+// accounts could lock, an attacker could tell "this exists" (locks after N
+// tries) apart from "it doesn't" (never locks) — a username oracle. A probe
+// against a fake username locks exactly the same as a real one.
+
+export interface LockoutStatus {
+  locked: boolean;
+  retryAfter?: Date;
+}
+
+/** Call before verifying a password — a locked username should never reach bcrypt.compare. */
+export async function checkLockout(username: string): Promise<LockoutStatus> {
+  const row = await queryOne<{ locked_until: string | null }>(
+    `SELECT locked_until FROM login_lockouts WHERE username = $1`,
+    [username]
+  );
+  if (!row?.locked_until) return { locked: false };
+  const lockedUntil = new Date(row.locked_until);
+  if (lockedUntil <= new Date()) return { locked: false };
+  return { locked: true, retryAfter: lockedUntil };
+}
+
+/** Bad password or bad MFA code — either counts the same way toward the threshold. */
+export async function recordFailedLogin(username: string): Promise<void> {
+  const row = await queryOne<{ failed_count: number }>(
+    `INSERT INTO login_lockouts (username, failed_count, last_attempt_at)
+     VALUES ($1, 1, now())
+     ON CONFLICT (username) DO UPDATE
+       SET failed_count = login_lockouts.failed_count + 1,
+           last_attempt_at = now()
+     RETURNING failed_count`,
+    [username]
+  );
+  if ((row?.failed_count ?? 0) >= config.loginLockout.threshold) {
+    await query(
+      `UPDATE login_lockouts
+         SET locked_until = now() + ($1::numeric * interval '1 minute')
+       WHERE username = $2`,
+      [config.loginLockout.durationMinutes, username]
+    );
+  }
+}
+
+/** Called once a login fully succeeds (password, and MFA if enabled) — clears any history. */
+export async function recordSuccessfulLogin(username: string): Promise<void> {
+  await query(`DELETE FROM login_lockouts WHERE username = $1`, [username]);
+}
+
+// ─── MFA pending logins ─────────────────────────────────────────────────────
+// A password-verified-but-not-yet-MFA'd login, same "real server-side row,
+// not a stateless token" choice as sessions below, for the same reason:
+// revocable/expirable server-side. Not consumed on a wrong code — only on
+// success or natural TTL expiry — so a mistyped code doesn't force
+// restarting the whole login (re-entering the password) needlessly.
+const MFA_PENDING_TTL_MS = 5 * 60 * 1000;
+
+export async function createMfaPendingLogin(userId: number): Promise<string> {
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + MFA_PENDING_TTL_MS);
+  await query("INSERT INTO mfa_pending_logins (token, user_id, expires_at) VALUES ($1, $2, $3)", [
+    token,
+    userId,
+    expiresAt.toISOString(),
+  ]);
+  return token;
+}
+
+/** Read-only — does not consume the pending login. */
+export async function getMfaPendingLoginUserId(token: string): Promise<number | null> {
+  const row = await queryOne<{ user_id: string }>(
+    `SELECT user_id::text FROM mfa_pending_logins WHERE token = $1 AND expires_at > now()`,
+    [token]
+  );
+  return row ? parseInt(row.user_id, 10) : null;
+}
+
+export async function deleteMfaPendingLogin(token: string): Promise<void> {
+  await query(`DELETE FROM mfa_pending_logins WHERE token = $1`, [token]);
 }
 
 export async function createSession(userId: number): Promise<{ id: string; expiresAt: Date }> {
