@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { getPool } from "./pool";
+import { logger } from "../logger";
 
 const MIGRATIONS_DIR = path.join(__dirname, "../migrations");
 
@@ -41,15 +42,15 @@ export async function runMigrations(): Promise<void> {
     const pending = files.filter((f) => !applied.has(f));
 
     if (pending.length === 0) {
-      console.log("✅  Database schema up to date");
+      logger.info("Database schema up to date");
       await client.query("COMMIT");
       return;
     }
 
-    console.log(`🔄  Applying ${pending.length} migration(s)...`);
+    logger.info("Applying migrations", { count: pending.length, files: pending });
     for (const file of pending) {
       const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), "utf-8");
-      console.log(`    → ${file}`);
+      logger.info("Applying migration", { file });
       await client.query(sql);
       await client.query(
         "INSERT INTO schema_migrations (version) VALUES ($1)",
@@ -57,10 +58,10 @@ export async function runMigrations(): Promise<void> {
       );
     }
     await client.query("COMMIT");
-    console.log("✅  Migrations complete");
+    logger.info("Migrations complete");
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error("❌  Migration failed:", err);
+    logger.error("Migration failed", { err });
     throw err;
   } finally {
     client.release();
@@ -72,7 +73,7 @@ if (require.main === module) {
   runMigrations()
     .then(() => process.exit(0))
     .catch((err) => {
-      console.error(err);
+      logger.error("Migration runner failed", { err });
       process.exit(1);
     });
 }

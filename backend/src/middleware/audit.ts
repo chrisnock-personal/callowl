@@ -4,9 +4,15 @@ import { logEvent, ActorType } from "../services/auditService";
 
 const BASE = config.apiBasePath;
 
-// No compliance value, would just be noise: health checks, API docs, and the
-// "am I logged in" ping the dashboard fires on every page load/reload.
-const SKIP_EXACT = new Set([`${BASE}/health`, `${BASE}/openapi.json`, `${BASE}/auth/me`]);
+// No compliance value, would just be noise: health checks, metrics scrapes,
+// API docs, and the "am I logged in" ping the dashboard fires on every page
+// load/reload.
+const SKIP_EXACT = new Set([
+  `${BASE}/health`,
+  `${BASE}/metrics`,
+  `${BASE}/openapi.json`,
+  `${BASE}/auth/me`,
+]);
 const SKIP_PREFIXES = [`${BASE}/docs`];
 
 function resolveActor(req: Request): { type: ActorType; id: string | null } {

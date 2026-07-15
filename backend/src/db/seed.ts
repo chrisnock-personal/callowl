@@ -1,5 +1,6 @@
 import fs from "fs";
 import { config } from "../config";
+import { logger } from "../logger";
 import { query } from "./pool";
 import { callRecordSchema } from "../schemas/cdr";
 import { ingestRecords } from "../services/ingestService";
@@ -16,7 +17,7 @@ export async function seedExamples(): Promise<void> {
     "SELECT COUNT(*)::text AS n FROM call_records"
   );
   if (parseInt(existing[0]?.n ?? "0", 10) > 0) {
-    console.log("🌱  Seed skipped — call_records already populated");
+    logger.info("Seed skipped — call_records already populated");
     return;
   }
 
@@ -25,7 +26,7 @@ export async function seedExamples(): Promise<void> {
   const records = parsed.examples.map((e) => callRecordSchema.parse(e));
 
   const results = await ingestRecords(records);
-  console.log(`🌱  Seeded ${results.length} example CDR(s) from the standard`);
+  logger.info("Seeded example CDRs from the standard", { count: results.length });
 }
 
 // Standalone runner (npm run seed)
@@ -33,7 +34,7 @@ if (require.main === module) {
   seedExamples()
     .then(() => process.exit(0))
     .catch((err) => {
-      console.error("Seed failed:", err);
+      logger.error("Seed failed", { err });
       process.exit(1);
     });
 }

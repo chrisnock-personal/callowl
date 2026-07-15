@@ -1,5 +1,6 @@
 import { callRecordSchema, type CallRecordInput } from "../schemas/cdr";
 import { ingestRecords } from "../services/ingestService";
+import { logger } from "../logger";
 
 /**
  * Generates rich, schema-conformant demo call records spanning the last 6
@@ -839,7 +840,7 @@ export async function seedDemoData(opts: { windowMs?: number; idPrefix?: string 
   // standard's own examples.
   const validated = records.map((r) => callRecordSchema.parse(r));
 
-  console.log(`🌱  Generated ${validated.length} rich demo records — ingesting in batches of 500...`);
+  logger.info("Generated rich demo records — ingesting", { count: validated.length, batchSize: 500 });
   const BATCH = 500;
   let created = 0;
   let updated = 0;
@@ -848,9 +849,9 @@ export async function seedDemoData(opts: { windowMs?: number; idPrefix?: string 
     const results = await ingestRecords(chunk);
     created += results.filter((r) => r.action === "created").length;
     updated += results.filter((r) => r.action === "updated").length;
-    console.log(`    ...${Math.min(i + BATCH, validated.length)}/${validated.length}`);
+    logger.info("Demo seed progress", { ingested: Math.min(i + BATCH, validated.length), total: validated.length });
   }
-  console.log(`🌱  Done — ${created} created, ${updated} updated`);
+  logger.info("Demo seed done", { created, updated });
 }
 
 // Standalone runner (npm run seed:demo)
@@ -858,7 +859,7 @@ if (require.main === module) {
   seedDemoData()
     .then(() => process.exit(0))
     .catch((err) => {
-      console.error("Rich demo seed failed:", err);
+      logger.error("Rich demo seed failed", { err });
       process.exit(1);
     });
 }

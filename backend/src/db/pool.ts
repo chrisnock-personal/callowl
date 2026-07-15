@@ -1,5 +1,6 @@
 import { Pool, PoolClient } from "pg";
 import { config } from "../config";
+import { logger } from "../logger";
 
 let pool: Pool;
 
@@ -8,12 +9,12 @@ export function getPool(): Pool {
     pool = new Pool(config.db);
 
     pool.on("error", (err) => {
-      console.error("Unexpected PostgreSQL pool error:", err);
+      logger.error("Unexpected PostgreSQL pool error", { err });
     });
 
     pool.on("connect", () => {
       if (config.nodeEnv === "development") {
-        console.log("📦  New PostgreSQL client connected");
+        logger.info("New PostgreSQL client connected");
       }
     });
   }
@@ -57,9 +58,11 @@ export async function testConnection(): Promise<void> {
   const client = await getPool().connect();
   try {
     await client.query("SELECT 1");
-    console.log(
-      `✅  PostgreSQL connected — ${config.db.host}:${config.db.port}/${config.db.database}`
-    );
+    logger.info("PostgreSQL connected", {
+      host: config.db.host,
+      port: config.db.port,
+      database: config.db.database,
+    });
   } finally {
     client.release();
   }

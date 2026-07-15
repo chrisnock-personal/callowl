@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 import path from "path";
 import { z } from "zod";
+import { logger } from "../logger";
 
 dotenv.config();
 
@@ -94,9 +95,8 @@ const envSchema = z.object({
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
-  console.error("❌  Invalid environment configuration:");
-  parsed.error.errors.forEach((err) => {
-    console.error(`    ${err.path.join(".")}: ${err.message}`);
+  logger.error("Invalid environment configuration", {
+    issues: parsed.error.errors.map((err) => ({ path: err.path.join("."), message: err.message })),
   });
   process.exit(1);
 }

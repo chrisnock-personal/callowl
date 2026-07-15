@@ -3,6 +3,7 @@ import { ingestRecords } from "./ingestService";
 import { getAuthHeader } from "./remoteAuthService";
 import { runCustomScript } from "./remoteScriptRunner";
 import { tryClaimJob } from "../db/jobLock";
+import { remotePollOutcomes } from "../metrics";
 import {
   getRemoteSourceForPolling,
   recordPollResult,
@@ -239,9 +240,19 @@ export function pollRemoteSource(sourceId: number): Promise<PollSummary> {
       };
     }
     return pollRemoteSourceImpl(sourceId);
-  })().finally(() => {
-    inFlightPolls.delete(sourceId);
-  });
+  })()
+    .then((summary) => {
+      // Recorded once here, from the final resolved status, rather than at
+      // each internal return point — guarantees every outcome is counted
+      // exactly once regardless of which code path produced it. A thrown
+      // rejection (e.g. an invalid sourceId) isn't a normal poll outcome and
+      // isn't counted here — index.ts's pollDueRemoteSources already logs it.
+      remotePollOutcomes.inc({ status: summary.status });
+      return summary;
+    })
+    .finally(() => {
+      inFlightPolls.delete(sourceId);
+    });
   inFlightPolls.set(sourceId, run);
   return run;
 }

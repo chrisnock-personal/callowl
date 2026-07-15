@@ -1,4 +1,5 @@
 import { seedDemoData } from "./seedDemo";
+import { logger } from "../logger";
 
 /**
  * Same generator as seedDemo.ts (npm run seed:demo) — every scenario, every
@@ -16,7 +17,7 @@ if (require.main === module) {
   seedDemoData({ windowMs: TWELVE_MONTHS_MS, idPrefix: "demo12mo" })
     .then(() => process.exit(0))
     .catch((err) => {
-      console.error("12-month rich demo seed failed:", err);
+      logger.error("12-month rich demo seed failed", { err });
       process.exit(1);
     });
 }

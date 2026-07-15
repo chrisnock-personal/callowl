@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
+import { logger } from "../logger";
 
 export interface ApiError extends Error {
   statusCode?: number;
@@ -10,7 +11,7 @@ export interface ApiError extends Error {
  */
 export function errorHandler(
   err: ApiError,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction
 ): void {
@@ -31,7 +32,9 @@ export function errorHandler(
   const status = err.statusCode ?? 500;
   const message = err.message ?? "Internal server error";
 
-  if (status >= 500) console.error("Server error:", err);
+  if (status >= 500) {
+    logger.error("Server error", { method: req.method, path: req.path, err });
+  }
 
   res.status(status).json({
     error: {
