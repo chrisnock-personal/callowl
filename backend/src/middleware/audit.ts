@@ -21,10 +21,10 @@ function resolveActor(req: Request): { type: ActorType; id: string | null } {
   if (req.user) return { type: "user", id: req.user.username };
 
   const apiKey = req.headers["x-api-key"] as string | undefined;
-  if (apiKey && config.ingestApiKey && apiKey === config.ingestApiKey) {
+  if (apiKey && config.ingestApiKeys.includes(apiKey)) {
     return { type: "ingest_key", id: null };
   }
-  if (apiKey && config.adminApiKey && apiKey === config.adminApiKey) {
+  if (apiKey && config.adminApiKeys.includes(apiKey)) {
     return { type: "admin_key", id: null };
   }
   // No valid credential at all — a failed login attempt or a bare 401 looks

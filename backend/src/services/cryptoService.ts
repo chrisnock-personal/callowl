@@ -36,6 +36,22 @@ export function mfaEncryptionKey(): Buffer {
   return resolveKey(config.mfa.encryptionKey, "MFA_ENC_KEY");
 }
 
+// Set during a rotation window (see SECRETS_ROTATION.md) so decrypt can fall
+// back to the key that sealed existing data while new writes move onto the
+// current key. undefined (not a throw) when unset — a rotation window is
+// optional, unlike the primary key.
+export function remoteSourceEncryptionKeyPrevious(): Buffer | undefined {
+  return config.remoteSources.encryptionKeyPrevious
+    ? resolveKey(config.remoteSources.encryptionKeyPrevious, "REMOTE_SOURCE_ENC_KEY_PREVIOUS")
+    : undefined;
+}
+
+export function mfaEncryptionKeyPrevious(): Buffer | undefined {
+  return config.mfa.encryptionKeyPrevious
+    ? resolveKey(config.mfa.encryptionKeyPrevious, "MFA_ENC_KEY_PREVIOUS")
+    : undefined;
+}
+
 /** Returns "iv:authTag:ciphertext", each part base64. */
 export function encryptSecret(plaintext: string, key: Buffer): string {
   const iv = crypto.randomBytes(IV_LENGTH);
@@ -57,6 +73,23 @@ export function decryptSecret(sealed: string, key: Buffer): string {
     decipher.final(),
   ]);
   return plaintext.toString("utf8");
+}
+
+/**
+ * Tries the current key first, falls back to the previous one if that fails
+ * — the read side of a rotation window (see SECRETS_ROTATION.md). Encryption
+ * has no equivalent: writes always use the current key only, so every write
+ * (a new/updated secret) moves data forward onto it automatically. If both
+ * attempts fail, the error from the *previous*-key attempt propagates (a
+ * genuinely wrong/corrupt secret, not just "hasn't been rotated yet").
+ */
+export function decryptSecretWithFallback(sealed: string, primary: Buffer, previous?: Buffer): string {
+  try {
+    return decryptSecret(sealed, primary);
+  } catch (err) {
+    if (!previous) throw err;
+    return decryptSecret(sealed, previous);
+  }
 }
 
 /** Whether remote-source credential encryption is actually usable right now. */

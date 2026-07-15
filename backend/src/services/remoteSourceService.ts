@@ -1,5 +1,10 @@
 import { query, queryOne } from "../db/pool";
-import { encryptSecret, decryptSecret, remoteSourceEncryptionKey } from "./cryptoService";
+import {
+  encryptSecret,
+  decryptSecretWithFallback,
+  remoteSourceEncryptionKey,
+  remoteSourceEncryptionKeyPrevious,
+} from "./cryptoService";
 
 export type RemoteSourceAuthType = "api_key" | "oauth2_client_credentials" | "custom";
 // "skipped_locked" only ever appears in a transient PollSummary (another
@@ -119,7 +124,11 @@ export type RemoteSourceAuth =
     }
   | { authType: "custom"; scriptBody: string; env: Record<string, string> };
 
-function buildAuthConfig(auth: RemoteSourceAuthInput): Record<string, unknown> {
+// Exported for backend/src/db/rotateEncryptionKeys.ts — a decrypt (with
+// rotation-window fallback) + re-encrypt (current key only) round trip
+// through these same two functions *is* the re-encryption operation, no
+// need for a separate copy of the auth-shape-branching logic.
+export function buildAuthConfig(auth: RemoteSourceAuthInput): Record<string, unknown> {
   const key = remoteSourceEncryptionKey();
   if (auth.authType === "api_key") {
     return { apiKeyEncrypted: encryptSecret(auth.apiKey, key), headerName: auth.headerName ?? "X-API-Key" };
@@ -135,12 +144,13 @@ function buildAuthConfig(auth: RemoteSourceAuthInput): Record<string, unknown> {
   return { scriptBody: auth.scriptBody, envEncrypted: encryptSecret(JSON.stringify(auth.env), key) };
 }
 
-function toAuth(authType: string, authConfig: Record<string, unknown>): RemoteSourceAuth {
+export function toAuth(authType: string, authConfig: Record<string, unknown>): RemoteSourceAuth {
   const key = remoteSourceEncryptionKey();
+  const previousKey = remoteSourceEncryptionKeyPrevious();
   if (authType === "api_key") {
     return {
       authType: "api_key",
-      apiKey: decryptSecret(authConfig.apiKeyEncrypted as string, key),
+      apiKey: decryptSecretWithFallback(authConfig.apiKeyEncrypted as string, key, previousKey),
       headerName: (authConfig.headerName as string) ?? "X-API-Key",
     };
   }
@@ -149,14 +159,18 @@ function toAuth(authType: string, authConfig: Record<string, unknown>): RemoteSo
       authType: "oauth2_client_credentials",
       tokenUrl: authConfig.tokenUrl as string,
       clientId: authConfig.clientId as string,
-      clientSecret: decryptSecret(authConfig.clientSecretEncrypted as string, key),
+      clientSecret: decryptSecretWithFallback(
+        authConfig.clientSecretEncrypted as string,
+        key,
+        previousKey
+      ),
       scope: (authConfig.scope as string | null) ?? undefined,
     };
   }
   return {
     authType: "custom",
     scriptBody: authConfig.scriptBody as string,
-    env: JSON.parse(decryptSecret(authConfig.envEncrypted as string, key)),
+    env: JSON.parse(decryptSecretWithFallback(authConfig.envEncrypted as string, key, previousKey)),
   };
 }
 

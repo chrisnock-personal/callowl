@@ -1,7 +1,12 @@
 import crypto from "crypto";
 import { generateSecret, generateURI, verify } from "otplib";
 import { query, queryOne } from "../db/pool";
-import { encryptSecret, decryptSecret, mfaEncryptionKey } from "./cryptoService";
+import {
+  encryptSecret,
+  decryptSecretWithFallback,
+  mfaEncryptionKey,
+  mfaEncryptionKeyPrevious,
+} from "./cryptoService";
 import { getUserById, verifyPassword } from "./authService";
 import { createError } from "../middleware/errorHandler";
 
@@ -64,7 +69,11 @@ export async function confirmEnrollment(userId: number, code: string): Promise<s
   );
   if (!row?.mfa_secret_encrypted) throw createError("No MFA enrollment in progress", 400);
 
-  const secret = decryptSecret(row.mfa_secret_encrypted, mfaEncryptionKey());
+  const secret = decryptSecretWithFallback(
+    row.mfa_secret_encrypted,
+    mfaEncryptionKey(),
+    mfaEncryptionKeyPrevious()
+  );
   if (!(await isValidTotp(secret, code))) throw createError("Invalid code", 401);
 
   await query(`UPDATE users SET mfa_enabled = true WHERE id = $1`, [userId]);
@@ -87,7 +96,11 @@ export async function verifyMfaCode(userId: number, code: string): Promise<boole
   );
   if (!row?.mfa_enabled || !row.mfa_secret_encrypted) return false;
 
-  const secret = decryptSecret(row.mfa_secret_encrypted, mfaEncryptionKey());
+  const secret = decryptSecretWithFallback(
+    row.mfa_secret_encrypted,
+    mfaEncryptionKey(),
+    mfaEncryptionKeyPrevious()
+  );
   if (await isValidTotp(secret, code)) return true;
 
   const recoveryRows = await query<{ id: string }>(

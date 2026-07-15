@@ -14,19 +14,21 @@ declare global {
 }
 
 /**
- * Optional-key gate, shared shape for ingest actions: if the configured key is
- * unset (dev/local mode), auth is disabled. Otherwise clients send it as
- * X-API-Key.
+ * Optional-key gate, shared shape for ingest actions: if no keys are
+ * configured (dev/local mode), auth is disabled. Otherwise clients send one
+ * of the currently-valid keys as X-API-Key — accepting a list (not just one)
+ * is what lets a key be rotated without a flag-day cutover, see
+ * SECRETS_ROTATION.md.
  */
-function requireKey(key: string | undefined, action: string) {
+function requireKey(keys: string[], action: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    if (!key) {
+    if (keys.length === 0) {
       next();
       return;
     }
 
     const providedKey = req.headers["x-api-key"] as string | undefined;
-    if (providedKey !== key) {
+    if (!providedKey || !keys.includes(providedKey)) {
       res.status(401).json({
         error: {
           code: "unauthorized",
@@ -40,22 +42,23 @@ function requireKey(key: string | undefined, action: string) {
 }
 
 /**
- * Protects POST /calls/ingest. If INGEST_API_KEY is unset, stays fully open
- * (unchanged, dev/local default). If set, accepts either an exact match on
- * INGEST_API_KEY or a valid per-user API key (any role — ingest isn't
- * role-gated, so a key shouldn't be either) as X-API-Key.
+ * Protects POST /calls/ingest. If no INGEST_API_KEY is configured, stays
+ * fully open (unchanged, dev/local default). If set, accepts either a match
+ * on any currently-valid INGEST_API_KEY value or a valid per-user API key
+ * (any role — ingest isn't role-gated, so a key shouldn't be either) as
+ * X-API-Key.
  */
 export async function requireApiKey(
   req: Request,
   res: Response,
   next: NextFunction
 ): Promise<void> {
-  if (!config.ingestApiKey) {
+  if (config.ingestApiKeys.length === 0) {
     next();
     return;
   }
   const providedKey = req.headers["x-api-key"] as string | undefined;
-  if (providedKey === config.ingestApiKey) {
+  if (providedKey && config.ingestApiKeys.includes(providedKey)) {
     next();
     return;
   }
@@ -120,16 +123,17 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
 /**
  * Protects the admin backup/restore actions (not the read-only status list,
  * which just needs requireAuth like the rest of the read API). Passes if
- * *either* ADMIN_API_KEY matches (unchanged from before — existing scripts/
- * automation keep working) *or* the caller is logged in as an admin, so the
- * dashboard doesn't need a separate key pasted in once real accounts exist.
+ * *either* a currently-valid ADMIN_API_KEY matches (unchanged from before —
+ * existing scripts/automation keep working) *or* the caller is logged in as
+ * an admin, so the dashboard doesn't need a separate key pasted in once real
+ * accounts exist.
  */
 export function requireAdminKey(req: Request, res: Response, next: NextFunction): void {
   if (req.user?.role === "admin") {
     next();
     return;
   }
-  requireKey(config.adminApiKey, "perform this action")(req, res, next);
+  requireKey(config.adminApiKeys, "perform this action")(req, res, next);
 }
 
 /**

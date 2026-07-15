@@ -11,6 +11,7 @@
     "seed": "ts-node src/db/seed.ts",
     "seed:demo": "ts-node src/db/seedDemo.ts",
     "seed:demo:12mo": "ts-node src/db/seedDemo12mo.ts",
+    "rotate-encryption-keys": "ts-node src/db/rotateEncryptionKeys.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -27,13 +27,16 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default("*"),
 
   // Ingest auth — if set, POST /calls/ingest requires this key via X-API-Key.
-  // Left unset in dev/local mode so ingestion works without a key.
+  // Left unset in dev/local mode so ingestion works without a key. Accepts a
+  // comma-separated list (e.g. "new,old") so a key can be rotated without a
+  // flag-day cutover — see SECRETS_ROTATION.md.
   INGEST_API_KEY: z.string().optional(),
 
   // Admin auth — if set, triggering a backup, downloading one, or restoring
   // requires this key via X-API-Key. The read-only backup list does not.
   // Left unset in dev/local mode. Strongly recommended once exposed beyond a
-  // local lab: restore replaces the database outright.
+  // local lab: restore replaces the database outright. Comma-separated list,
+  // same rotation support as INGEST_API_KEY.
   ADMIN_API_KEY: z.string().optional(),
 
   // Seed the five example scenarios from the Open CDR Standard on first boot.
@@ -70,6 +73,12 @@ const envSchema = z.object({
   // for an unconfigured BACKUPS_DIR.
   REMOTE_SOURCE_ENC_KEY: z.string().optional(),
 
+  // During a rotation window (see SECRETS_ROTATION.md): decrypt falls back to
+  // this key if REMOTE_SOURCE_ENC_KEY fails, so already-stored credentials
+  // keep working while new writes move onto the new key. Unset once
+  // `npm run rotate-encryption-keys` has migrated every row.
+  REMOTE_SOURCE_ENC_KEY_PREVIOUS: z.string().optional(),
+
   // How long remote_source_rejects entries are kept — pruned once on boot
   // and daily thereafter (see index.ts). Mirrors AUDIT_LOG_RETENTION_DAYS.
   REMOTE_SOURCE_REJECTS_RETENTION_DAYS: z.string().default("90"),
@@ -90,6 +99,9 @@ const envSchema = z.object({
   // other. Optional at boot, same posture as REMOTE_SOURCE_ENC_KEY — gated
   // at the point of use (enrolling MFA while this is unset returns a 501).
   MFA_ENC_KEY: z.string().optional(),
+
+  // Same rotation-window fallback as REMOTE_SOURCE_ENC_KEY_PREVIOUS, for MFA secrets.
+  MFA_ENC_KEY_PREVIOUS: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -107,12 +119,21 @@ const env = parsed.data;
 // ts-node (src) and built output (dist). Resolve relative to this file.
 const dataDir = path.join(__dirname, "..", "data");
 
+// "new,old" -> ["new", "old"]; unset/empty -> [] (same "unauthenticated" meaning
+// an empty/falsy single value had before). A lone value still works identically.
+function parseKeyList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
 export const config = {
   port: parseInt(env.PORT, 10),
   nodeEnv: env.NODE_ENV,
   corsOrigin: env.CORS_ORIGIN,
-  ingestApiKey: env.INGEST_API_KEY,
-  adminApiKey: env.ADMIN_API_KEY,
+  ingestApiKeys: parseKeyList(env.INGEST_API_KEY),
+  adminApiKeys: parseKeyList(env.ADMIN_API_KEY),
   seedExamples: env.SEED_EXAMPLES === "true",
 
   apiBasePath: "/api/cdr/v1",
@@ -142,6 +163,7 @@ export const config = {
 
   remoteSources: {
     encryptionKey: env.REMOTE_SOURCE_ENC_KEY,
+    encryptionKeyPrevious: env.REMOTE_SOURCE_ENC_KEY_PREVIOUS,
     rejectsRetentionDays: parseInt(env.REMOTE_SOURCE_REJECTS_RETENTION_DAYS, 10),
   },
 
@@ -152,6 +174,7 @@ export const config = {
 
   mfa: {
     encryptionKey: env.MFA_ENC_KEY,
+    encryptionKeyPrevious: env.MFA_ENC_KEY_PREVIOUS,
   },
 
   db: {
