@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { spawn } from "child_process";
 import { config } from "../config";
+import { readLastAttempt, LastAttempt } from "./statusFile";
 
 // Same naming convention as scripts/backup.sh, so on-demand and scheduled
 // dumps land in the same directory and list together.
@@ -122,10 +123,7 @@ export function isValidBackupFilename(filename: string): boolean {
   return /^opencdr-\d{8}T\d{6}Z\.dump$/.test(filename);
 }
 
-export interface LastAttempt {
-  at: string;
-  status: "ok" | "failed";
-}
+export type { LastAttempt };
 
 // Written by scripts/backup.sh on every scheduled run, success or failure —
 // the only way a broken backup loop (disk full, DB unreachable, permissions)
@@ -135,13 +133,5 @@ export interface LastAttempt {
 export function getLastAttempt(): LastAttempt | null {
   const dir = config.backups.dir;
   if (!dir) return null;
-  const file = path.join(dir, ".last-attempt");
-  if (!fs.existsSync(file)) return null;
-  const line = fs.readFileSync(file, "utf-8").trim();
-  const spaceIdx = line.indexOf(" ");
-  if (spaceIdx === -1) return null;
-  const at = line.slice(0, spaceIdx);
-  const status = line.slice(spaceIdx + 1);
-  if (status !== "ok" && status !== "failed") return null;
-  return { at, status };
+  return readLastAttempt(path.join(dir, ".last-attempt"));
 }

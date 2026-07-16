@@ -37,11 +37,17 @@ set -eu
   done
   echo "[pgbackrest-init] stanza ready"
 
+  # /backups is the same host ./backups directory scripts/backup.sh and the
+  # backend already use — .pitr-last-attempt lets GET /admin/backups surface
+  # base-backup health the same way .last-attempt already does for pg_dump.
+  mkdir -p /backups
   while true; do
     if su-exec postgres pgbackrest --stanza=opencdr backup; then
       echo "[pgbackrest-backup] backup complete"
+      echo "$(date -u +%FT%TZ) ok" > /backups/.pitr-last-attempt
     else
       echo "[pgbackrest-backup] backup failed, will retry next interval"
+      echo "$(date -u +%FT%TZ) failed" > /backups/.pitr-last-attempt
     fi
     sleep "$(( ${PITR_BACKUP_INTERVAL_HOURS:-24} * 3600 ))"
   done

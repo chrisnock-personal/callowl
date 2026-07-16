@@ -48,6 +48,12 @@ const envSchema = z.object({
   BACKUP_RETENTION_DAYS: z.string().default("14"),
   BACKUP_INTERVAL_HOURS: z.string().default("24"),
 
+  // How often the db service's pgBackRest loop takes a new PITR base
+  // backup — same var already passed to `db` in docker-compose.yml; needed
+  // here too so GET /admin/backups can compute staleness for the base-backup
+  // half of PITR health, the same way BACKUP_INTERVAL_HOURS does for pg_dump.
+  PITR_BACKUP_INTERVAL_HOURS: z.string().default("24"),
+
   // Dashboard/API user accounts. The bootstrap admin is created on first boot
   // if the users table is empty — see db/seedAdmin.ts. Login is required for
   // every user beyond that; there's no "open" mode once this exists.
@@ -149,6 +155,10 @@ export const config = {
     dir: env.BACKUPS_DIR,
     retentionDays: parseInt(env.BACKUP_RETENTION_DAYS, 10),
     intervalHours: parseInt(env.BACKUP_INTERVAL_HOURS, 10),
+  },
+
+  pitr: {
+    baseBackupIntervalHours: parseInt(env.PITR_BACKUP_INTERVAL_HOURS, 10),
   },
 
   auth: {

@@ -14,6 +14,7 @@ import {
   looksLikePgDumpCustomFormat,
   getLastAttempt,
 } from "../db/backup";
+import { getArchiverStatus, getBaseBackupLastAttempt } from "../db/pitr";
 import {
   createUser,
   listUsers,
@@ -44,19 +45,37 @@ const router = Router();
  * Any logged-in user can see it (requireAuth, not requireAdmin) — consistent
  * with "always require login" applying uniformly to the read surface.
  */
-router.get("/backups", requireAuth, (_req: Request, res: Response) => {
-  res.json({
-    data: listBackups(),
-    retentionDays: config.backups.retentionDays,
-    intervalHours: config.backups.intervalHours,
-    configured: !!config.backups.dir,
-    // Written by the scheduled `backup` service on every run (scripts/backup.sh),
-    // success or failure — lets the dashboard flag a broken backup loop instead
-    // of that only ever showing up in `podman logs`. Absent for a deployment
-    // that's never had the scheduled service run yet (on-demand-only usage).
-    lastAttempt: getLastAttempt(),
-  });
-});
+router.get(
+  "/backups",
+  requireAuth,
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      res.json({
+        data: listBackups(),
+        retentionDays: config.backups.retentionDays,
+        intervalHours: config.backups.intervalHours,
+        configured: !!config.backups.dir,
+        // Written by the scheduled `backup` service on every run (scripts/backup.sh),
+        // success or failure — lets the dashboard flag a broken backup loop instead
+        // of that only ever showing up in `podman logs`. Absent for a deployment
+        // that's never had the scheduled service run yet (on-demand-only usage).
+        lastAttempt: getLastAttempt(),
+        // Point-in-time recovery (pgBackRest + MinIO — see DISASTER_RECOVERY.md
+        // Scenario C) health, alongside the pg_dump status above. archiving
+        // comes straight from Postgres's own pg_stat_archiver; lastBaseBackupAttempt
+        // mirrors lastAttempt's marker-file convention for pgBackRest's separate
+        // periodic backup command.
+        pitr: {
+          archiving: await getArchiverStatus(),
+          baseBackupIntervalHours: config.pitr.baseBackupIntervalHours,
+          lastBaseBackupAttempt: getBaseBackupLastAttempt(),
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 /** POST /admin/backups (platform extension) — trigger a pg_dump now. */
 router.post(

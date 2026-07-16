@@ -1301,6 +1301,24 @@ function HeaderMenu({
         2 * backups.intervalHours * 3_600_000) ||
       backups.lastAttempt?.status === "failed");
 
+  // PITR (pgBackRest + MinIO — see DISASTER_RECOVERY.md Scenario C) health,
+  // alongside the pg_dump check above. archive_timeout=60 forces a WAL
+  // switch at least every minute, so a generous 10min-silence threshold
+  // reliably means archiving has actually stopped, not just a quiet period.
+  const ARCHIVE_STALE_MS = 10 * 60 * 1000;
+  const archiving = backups?.pitr.archiving ?? null;
+  const archivingIsStale =
+    !!archiving?.lastArchivedAt &&
+    Date.now() - new Date(archiving.lastArchivedAt).getTime() > ARCHIVE_STALE_MS;
+  const lastBaseBackupAttempt = backups?.pitr.lastBaseBackupAttempt ?? null;
+  const baseBackupIsStale =
+    !!backups &&
+    !!lastBaseBackupAttempt &&
+    (lastBaseBackupAttempt.status === "failed" ||
+      Date.now() - new Date(lastBaseBackupAttempt.at).getTime() >
+        2 * backups.pitr.baseBackupIntervalHours * 3_600_000);
+  const pitrIsStale = archivingIsStale || baseBackupIsStale;
+
   return (
     <div style={{ position: "relative" }}>
       <button
@@ -1509,6 +1527,55 @@ function HeaderMenu({
                       ))}
                     </div>
                   )}
+
+                  <div style={{ borderTop: `1px solid ${C.border}`, margin: "10px 0" }} />
+                  <div
+                    style={{
+                      fontSize: 10.5,
+                      letterSpacing: 0.5,
+                      textTransform: "uppercase",
+                      color: C.textMuted,
+                      fontWeight: 700,
+                      marginBottom: 6,
+                    }}
+                  >
+                    Point-in-time recovery
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: pitrIsStale ? C.rose : C.ink,
+                    }}
+                  >
+                    {pitrIsStale && "⚠ "}
+                    {archiving?.lastArchivedAt
+                      ? `WAL archiving: ${fmtRelative(archiving.lastArchivedAt)}`
+                      : "WAL archiving: no archives yet"}
+                  </div>
+                  {archivingIsStale && (
+                    <div style={{ fontSize: 11.5, color: C.rose, marginTop: 2 }}>
+                      No WAL archived in over 10m — check `podman logs opencdr-db`
+                      (MinIO/credentials?).
+                    </div>
+                  )}
+                  {baseBackupIsStale && lastBaseBackupAttempt && (
+                    <div style={{ fontSize: 11.5, color: C.rose, marginTop: 2 }}>
+                      Last PITR base backup ({fmtRelative(lastBaseBackupAttempt.at)}){" "}
+                      {lastBaseBackupAttempt.status === "failed" ? "failed" : "is overdue"} —
+                      check `podman logs opencdr-db`.
+                    </div>
+                  )}
+                  <div
+                    style={{ fontSize: 11.5, color: C.textMuted, fontFamily: MONO, marginTop: 2 }}
+                  >
+                    {lastBaseBackupAttempt
+                      ? `base backup ${lastBaseBackupAttempt.status} ${fmtRelative(
+                          lastBaseBackupAttempt.at
+                        )}`
+                      : "no base backup yet"}{" "}
+                    · every {backups.pitr.baseBackupIntervalHours}h
+                  </div>
 
                   <input
                     type="password"

@@ -51,6 +51,10 @@ services:
       PITR_BACKUP_INTERVAL_HOURS: "${PITR_BACKUP_INTERVAL_HOURS:-24}"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Same host ./backups directory backend/backup already mount — lets
+      # the pgBackRest loop write .pitr-last-attempt (base-backup status,
+      # read by GET /admin/backups) next to pg_dump's own .last-attempt.
+      - ./backups:/backups:z
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-opencdr} -d ${PGDATABASE:-opencdr}"]
       interval: 5s
@@ -88,6 +92,10 @@ services:
       BACKUPS_DIR: /app/backups
       BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-14}"
       BACKUP_INTERVAL_HOURS: "${BACKUP_INTERVAL_HOURS:-24}"
+      # Same var already passed to `db` (its pgBackRest loop's own schedule)
+      # — needed here too so GET /admin/backups can compute base-backup
+      # staleness for the dashboard's PITR health warning.
+      PITR_BACKUP_INTERVAL_HOURS: "${PITR_BACKUP_INTERVAL_HOURS:-24}"
       # Dashboard/API login — always required, no open mode. Bootstrap admin
       # is created on first boot if no users exist yet; see .env.example.
       BOOTSTRAP_ADMIN_USERNAME: "${BOOTSTRAP_ADMIN_USERNAME:-admin}"

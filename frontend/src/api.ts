@@ -294,12 +294,28 @@ export interface BackupLastAttempt {
   status: "ok" | "failed";
 }
 
+export interface ArchiverStatus {
+  archivedCount: number;
+  lastArchivedWal: string | null;
+  lastArchivedAt: string | null;
+  failedCount: number;
+  lastFailedWal: string | null;
+  lastFailedAt: string | null;
+}
+
+export interface PitrStatus {
+  archiving: ArchiverStatus | null;
+  baseBackupIntervalHours: number;
+  lastBaseBackupAttempt: BackupLastAttempt | null;
+}
+
 export interface BackupStatus {
   data: BackupFile[];
   retentionDays: number;
   intervalHours: number;
   configured: boolean;
   lastAttempt: BackupLastAttempt | null;
+  pitr: PitrStatus;
 }
 
 export type ActorType = "user" | "ingest_key" | "admin_key" | "anonymous";
