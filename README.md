@@ -236,7 +236,7 @@ A prototype: no TLS baked in (bring your own reverse proxy — see [Deploying](#
 
 Not yet implemented — tracked here for now:
 
-Nothing currently tracked here — see Done below for everything shipped so far.
+- **Off-host copy of backups/PITR archives** *(production-readiness)* — both `./backups` (scheduled `pg_dump`s) and MinIO's own data volume live on the same host as the database they're backing up. Neither is copied elsewhere automatically, so a full host loss (`DISASTER_RECOVERY.md`'s Scenario B) is only survivable today if *you've* separately copied a `.dump` file off-host yourself — PITR doesn't close this gap either, since MinIO's data dies with the host exactly like `./backups` does. Needs a real off-host target (another host, cloud object storage, etc.) and a sync mechanism, not just documentation.
 
 Done:
 
