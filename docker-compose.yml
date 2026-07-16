@@ -13,12 +13,42 @@
 # ─────────────────────────────────────────────────────────────────────────────
 services:
   db:
-    image: postgres:16-alpine
+    build:
+      context: ./postgres
     container_name: opencdr-db
+    depends_on:
+      - minio
+    # Enables continuous WAL archiving to MinIO via pgBackRest (point-in-time
+    # recovery — see DISASTER_RECOVERY.md and postgres/pgbackrest.conf).
+    # archive_timeout forces a WAL segment switch at least this often even
+    # under low write volume — otherwise a quiet period leaves the actual
+    # PITR granularity far coarser than the 60s this implies.
+    command: >
+      postgres
+      -c archive_mode=on
+      -c "archive_command=pgbackrest --stanza=opencdr archive-push %p"
+      -c archive_timeout=60
     environment:
       POSTGRES_DB: "${PGDATABASE:-opencdr}"
       POSTGRES_USER: "${PGUSER:-opencdr}"
       POSTGRES_PASSWORD: "${PGPASSWORD:-opencdr_pass}"
+      # pgBackRest reads these rather than pgbackrest.conf, so the secret
+      # values stay out of the baked image — see postgres/pgbackrest.conf.
+      PGBACKREST_REPO1_S3_KEY: "${MINIO_ROOT_USER:-opencdr-minio}"
+      PGBACKREST_REPO1_S3_KEY_SECRET: "${MINIO_ROOT_PASSWORD:-change_me_minio}"
+      PGBACKREST_REPO1_S3_BUCKET: "${MINIO_BUCKET:-opencdr-pitr}"
+      # Connects as $PGUSER, not the container's default OS user (root) —
+      # POSTGRES_USER is the only superuser role that exists (the official
+      # image doesn't also create a "postgres" role once it's renamed), and
+      # there's no "root" role at all, so an unqualified connection fails
+      # auth with "role \"root\" does not exist" before trust/peer rules
+      # even come into play.
+      PGBACKREST_PG1_USER: "${PGUSER:-opencdr}"
+      # How often docker-entrypoint-wrapper.sh's background loop takes a new
+      # pgBackRest base backup — separate from BACKUP_INTERVAL_HOURS (the
+      # existing pg_dump service), and from WAL archiving itself, which is
+      # continuous/automatic via archive_command above, not on this schedule.
+      PITR_BACKUP_INTERVAL_HOURS: "${PITR_BACKUP_INTERVAL_HOURS:-24}"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -97,9 +127,62 @@ services:
       - "${HTTP_PORT:-8080}:80"
     restart: unless-stopped
 
+  # Self-hosted S3-compatible object storage — the pgBackRest WAL-archiving
+  # target for point-in-time recovery (see db's command/environment below
+  # and DISASTER_RECOVERY.md). Chosen over SFTP: neither pgBackRest nor
+  # WAL-G support SFTP at all, since continuous WAL shipping needs the
+  # ordered, retry-safe delivery an object-storage API gives for free.
+  # Internal-only (no host port) — same posture as `db`; reach the console
+  # via `podman exec` or a temporary port-forward if you ever need it.
+  #
+  # Custom-built (see minio/Dockerfile) to bake in a self-signed TLS cert —
+  # pgBackRest's S3 driver always speaks TLS (repo1-s3-verify-tls=n in
+  # postgres/pgbackrest.conf only skips certificate *verification*, it
+  # doesn't drop encryption), so MinIO has to actually terminate TLS or
+  # every pgBackRest connection fails with "TLS error ... wrong version
+  # number" — confirmed the hard way, not assumed up front.
+  minio:
+    build:
+      context: ./minio
+    container_name: opencdr-minio
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-opencdr-minio}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-change_me_minio}"
+    volumes:
+      - miniodata:/data
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+  # One-shot: creates the PITR bucket, then exits. MinIO doesn't auto-create
+  # buckets, and `db`'s own pgbackrest loop retries stanza-create until the
+  # bucket exists, so this doesn't need to be perfectly ordered before `db`
+  # starts — just needs to succeed eventually.
+  minio-init:
+    image: minio/mc:latest
+    container_name: opencdr-minio-init
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-opencdr-minio}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-change_me_minio}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-opencdr-pitr}"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set --insecure local https://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
+          echo "[minio-init] minio not ready, retrying in 3s..."
+          sleep 3
+        done
+        mc mb --insecure --ignore-existing "local/$$MINIO_BUCKET"
+        echo "[minio-init] bucket $$MINIO_BUCKET ready"
+    restart: "no"
+
   # Scheduled pg_dump on a loop (no cron daemon needed) + retention pruning.
   # postgres:16-alpine already ships pg_dump/pg_restore, so it doubles as the
-  # image for one-off manual restores: see scripts/restore.sh.
+  # image for one-off manual restores: see scripts/restore.sh. Separate from
+  # (and unaffected by) db's own pgBackRest/PITR setup below — a portable
+  # logical dump has real value PITR doesn't replace, see DISASTER_RECOVERY.md.
   backup:
     image: postgres:16-alpine
     container_name: opencdr-backup
@@ -130,4 +213,6 @@ services:
 
 volumes:
   pgdata:
+    driver: local
+  miniodata:
     driver: local

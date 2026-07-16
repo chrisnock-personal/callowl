@@ -1,12 +1,14 @@
 # Disaster recovery runbook
 
-Operator-facing procedures for restoring this platform's data from backup. See README's [Backup & maintenance](./README.md#backup--maintenance) for how backups are taken; this document is about getting them *back in*, under pressure, without guessing.
+Operator-facing procedures for restoring this platform's data from backup. See README's [Backup & maintenance](./README.md#backup--maintenance) for how backups are taken; this document is about getting them *back in*, under pressure, without guessing. Covers both restoring from a `pg_dump` (Scenarios A & B) and point-in-time recovery via continuous WAL archiving (Scenario C).
 
 Read [Known limitations](#known-limitations) before you need this — it says plainly what this setup can't yet protect against.
 
 ---
 
-## Before you start, in any scenario
+## Before you start (Scenarios A & B — restoring from a `pg_dump`)
+
+Scenario C (point-in-time restore) has its own self-contained steps below — these three don't apply there, since it restores to a *time* you choose, not a specific dump file.
 
 1. **Identify which dump to restore.** Backups are named `opencdr-<UTC timestamp>.dump` (e.g. `opencdr-20260714T100500Z.dump`) — pick the most recent one from *before* whatever went wrong. The dashboard's header menu (**⋯** → Backups) lists recent ones with relative ages; `ls -la ./backups` on the host shows all of them.
 2. **`pg_restore --clean --if-exists` (what both the UI/API restore and `scripts/restore.sh` use) drops and recreates conflicting objects as it goes — the target database does not need to be empty first, and does not need the schema pre-created.** You are not choosing between "restore" and "wipe first, then restore" — restoring *is* the wipe-and-replace, in one step.
@@ -51,6 +53,47 @@ The host itself is gone (disk failure, terminated instance, etc.) — you're sta
 
 ---
 
+## Scenario C — point-in-time restore
+
+Data corruption, a bad migration, or an accidental delete where you know (or can narrow down) roughly *when* it happened, and restoring to the last daily `pg_dump` would lose too much — or there simply wasn't one recent enough. Continuous WAL archiving (pgBackRest, to the self-hosted MinIO target — see `postgres/pgbackrest.conf`, `docker-compose.yml`'s `db` service) can restore to any point since the oldest retained base backup, not just to a dump's exact moment.
+
+**This is a materially different procedure from Scenario A** — it operates on Postgres's own physical data directory, not a live `pg_restore` connection, and requires stopping `db` entirely for the duration.
+
+1. **Pick your target time**, as precise as you can get, in UTC (`YYYY-MM-DD HH:MM:SS`) — pgBackRest replays WAL up to (but not past) this point. If in doubt, err slightly *earlier* than the incident; you can always re-run with a later target, but you can't recover data written after whatever point you restore to without redoing the whole restore.
+2. **Stop the stack** (data is unreachable during the restore regardless):
+   ```bash
+   podman-compose stop backend db
+   ```
+3. **Restore**, via a one-off container using the same image, sharing `db`'s actual data volume:
+   ```bash
+   podman run --rm \
+     -v open-cdr-platform_pgdata:/var/lib/postgresql/data \
+     --network open-cdr-platform_default \
+     -e PGBACKREST_REPO1_S3_KEY="$MINIO_ROOT_USER" \
+     -e PGBACKREST_REPO1_S3_KEY_SECRET="$MINIO_ROOT_PASSWORD" \
+     -e PGBACKREST_REPO1_S3_BUCKET="$MINIO_BUCKET" \
+     --user postgres \
+     --entrypoint pgbackrest \
+     localhost/open-cdr-platform_db:latest \
+     --stanza=opencdr --type=time --target="2026-07-15 14:30:00" --delta restore
+   ```
+   `--entrypoint pgbackrest` overrides the image's default entrypoint (the pgBackRest-init wrapper around Postgres's own startup, which isn't what you want for a one-off restore command).
+   `--delta` restores only what's actually changed rather than requiring a fully empty data directory first — safe to run directly against `db`'s existing (stopped) volume.
+4. **Start `db` back up normally:**
+   ```bash
+   podman-compose up -d db
+   ```
+   Postgres itself detects it's in recovery, replays the archived WAL up to your target time, and reaches a consistent state automatically — there's no separate "apply the WAL" step to run by hand. Watch `podman logs opencdr-db` for `database system is ready to accept connections`, and confirm the healthcheck (`podman ps`) reports healthy before continuing.
+5. **Start the backend back up:**
+   ```bash
+   podman-compose up -d backend
+   ```
+6. Run the [post-restore verification checklist](#post-restore-verification-checklist) below — **plus**: confirm the data reflects what you'd expect as of your target time specifically (e.g. a record you know was created *after* the incident but *before* your target time should be present; one created after your target time should be genuinely absent, not just "some data exists").
+
+**If the restore didn't land where you meant it to** — wrong target time, or the incident turns out to have started earlier than you thought — there's no partial undo. Stop `db` again and re-run step 3 with a corrected target; `--delta` re-evaluates from the base backup each time, so this is safe to repeat.
+
+---
+
 ## Post-restore verification checklist
 
 Run these after *any* restore, before considering the incident closed.
@@ -73,6 +116,7 @@ If any of these fail, do not assume the restore is "mostly fine" — figure out 
 
 ## Known limitations
 
-- **No point-in-time recovery.** A `pg_dump` only ever restores to the exact moment it was taken — anything written between the last dump and the incident is gone. Continuous WAL archiving would close this gap; not implemented yet (see README Roadmap).
+- **Point-in-time restore (Scenario C) only covers what's been continuously archived.** If WAL archiving itself was ever broken (MinIO unreachable, a misconfigured key) for a stretch of time, that stretch can't be recovered — check `podman logs opencdr-db` for `[pgbackrest-init]`/`[pgbackrest-backup]` lines, and `pgbackrest info` (run inside the `db` container) to confirm archiving has actually been healthy; don't just assume it has been.
+- **Single-host only.** MinIO and Postgres are separate containers but run on the same host — this protects against the corruption/bad-migration/accidental-delete scenarios PITR exists for, but MinIO's own data lives in a volume on that same host, so it does **not** by itself protect against the full host loss Scenario B describes, the way an off-host `pg_dump` copy would.
 - **Backups are not copied off-host automatically.** `./backups` lives on the same host as the database it's backing up. A full host loss (Scenario B) is only survivable if *you* have separately copied `.dump` files elsewhere (another host, object storage, wherever) — this platform doesn't do that step for you today.
 - **Restore replaces the whole database, not selected tables/rows.** There's no partial/selective restore — it's all-or-nothing via `pg_restore --clean --if-exists`.
