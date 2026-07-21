@@ -1,6 +1,6 @@
 #!/bin/sh
 # ─────────────────────────────────────────────────────────────────────────────
-# Dumps the opencdr database to /backups (custom pg_dump format, compressed),
+# Dumps the callowl database to /backups (custom pg_dump format, compressed),
 # then prunes dumps older than BACKUP_RETENTION_DAYS. Runs inside the `backup`
 # compose service (a plain postgres:16-alpine image, which already ships
 # pg_dump) on a loop — see docker-compose.yml. Can also be run manually. Note
@@ -14,7 +14,7 @@ set -eu
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT="${BACKUP_DIR}/opencdr-${STAMP}.dump"
+OUT="${BACKUP_DIR}/callowl-${STAMP}.dump"
 STATUS_FILE="${BACKUP_DIR}/.last-attempt"
 
 mkdir -p "$BACKUP_DIR"
@@ -40,7 +40,9 @@ PGPASSWORD="$PGPASSWORD" pg_dump \
 echo "[backup] done ($(du -h "$OUT" | cut -f1))"
 
 echo "[backup] pruning dumps older than ${RETENTION_DAYS}d in ${BACKUP_DIR}"
-find "$BACKUP_DIR" -name 'opencdr-*.dump' -mtime "+${RETENTION_DAYS}" -print -delete
+# Glob is brand-agnostic (not hardcoded to one prefix) so dumps from before a
+# rebrand (e.g. "opencdr-...") keep getting pruned alongside current ones.
+find "$BACKUP_DIR" -name '*-????????T??????Z.dump' -mtime "+${RETENTION_DAYS}" -print -delete
 
 write_status ok
 trap - EXIT

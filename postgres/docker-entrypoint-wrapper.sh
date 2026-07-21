@@ -31,7 +31,11 @@ set -eu
     sleep 2
   done
 
-  until su-exec postgres pgbackrest --stanza=opencdr stanza-create; do
+  # Stanza cut over from "opencdr" to "callowl" during the CallOwl rebrand — the
+  # prior stanza's backup chain is left in place in the old bucket, still
+  # restorable by pointing config back at it (see DISASTER_RECOVERY.md), just
+  # no longer extended.
+  until su-exec postgres pgbackrest --stanza=callowl stanza-create; do
     echo "[pgbackrest-init] stanza-create failed, retrying in 5s..."
     sleep 5
   done
@@ -42,7 +46,7 @@ set -eu
   # base-backup health the same way .last-attempt already does for pg_dump.
   mkdir -p /backups
   while true; do
-    if su-exec postgres pgbackrest --stanza=opencdr backup; then
+    if su-exec postgres pgbackrest --stanza=callowl backup; then
       echo "[pgbackrest-backup] backup complete"
       echo "$(date -u +%FT%TZ) ok" > /backups/.pitr-last-attempt
     else

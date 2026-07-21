@@ -10,7 +10,7 @@ import {
 import { getUserById, verifyPassword } from "./authService";
 import { createError } from "../middleware/errorHandler";
 
-const ISSUER = "Open CDR Platform";
+const ISSUER = "CallOwl";
 
 export interface MfaEnrollment {
   secret: string;

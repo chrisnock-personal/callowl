@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ─── Open CDR Platform — Sync & Deploy Script ────────────────────────────────
+# ─── CallOwl — Sync & Deploy Script ──────────────────────────────────────────
 # Syncs local source changes to a remote host (e.g. a VPS) and rebuilds/
 # restarts the podman-compose stack there. Mirrors the sync.sh pattern from
 # open-event-aggregator, adapted for this project's multi-service compose
@@ -18,6 +18,9 @@ set -e
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 REMOTE_HOST="${OPENCDR_REMOTE:-}"
+# Default intentionally left pointing at the existing remote deployment's
+# actual path, not renamed to match the local CallOwl rebrand — this is
+# where the real, already-running production checkout lives.
 REMOTE_DIR="${OPENCDR_REMOTE_DIR:-~/Apps/open-cdr-platform}"
 LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -54,7 +57,7 @@ if [ -z "$REMOTE_HOST" ]; then
   exit 1
 fi
 
-echo "📡  Open CDR Platform Sync & Deploy"
+echo "📡  CallOwl Sync & Deploy"
 echo "    Local:  $LOCAL_DIR"
 echo "    Remote: $REMOTE_HOST:$REMOTE_DIR"
 echo ""
@@ -105,8 +108,8 @@ if [ "$SYNC_ONLY" = false ]; then
     # "has dependent containers" — remove frontend first, backend second,
     # each tolerant of failure (podman-compose up -d recreates whatever's
     # actually missing regardless).
-    podman rm -f opencdr-frontend 2>/dev/null || true
-    podman rm -f opencdr-backend 2>/dev/null || true
+    podman rm -f callowl-frontend 2>/dev/null || true
+    podman rm -f callowl-backend 2>/dev/null || true
     podman-compose up -d
 
     echo ""
@@ -115,7 +118,7 @@ if [ "$SYNC_ONLY" = false ]; then
 
     echo ""
     echo "─── Startup logs ────────────────────────────────────────────────"
-    podman logs --tail 20 opencdr-backend
+    podman logs --tail 20 callowl-backend
     echo "─────────────────────────────────────────────────────────────────"
     echo ""
     echo "✅  Deploy complete"
@@ -130,5 +133,5 @@ fi
 if [ "$SHOW_LOGS" = true ]; then
   echo "📋  Tailing backend logs (Ctrl+C to stop)..."
   echo ""
-  ssh -t "$REMOTE_HOST" "podman logs -f opencdr-backend"
+  ssh -t "$REMOTE_HOST" "podman logs -f callowl-backend"
 fi

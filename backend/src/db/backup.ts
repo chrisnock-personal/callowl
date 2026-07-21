@@ -8,7 +8,7 @@ import { readLastAttempt, LastAttempt } from "./statusFile";
 // dumps land in the same directory and list together.
 function filenameFor(date: Date): string {
   const stamp = date.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
-  return `opencdr-${stamp}.dump`;
+  return `callowl-${stamp}.dump`;
 }
 
 export interface BackupResult {
@@ -118,9 +118,11 @@ export function listBackups(): BackupResult[] {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-/** Guards against path traversal — only a filename matching our own naming scheme is valid. */
+/** Guards against path traversal — only a filename matching our own naming scheme is valid.
+ * Prefix is deliberately brand-agnostic (not hardcoded to one name) so dumps from
+ * before a rebrand (e.g. "opencdr-...") keep validating alongside current ones. */
 export function isValidBackupFilename(filename: string): boolean {
-  return /^opencdr-\d{8}T\d{6}Z\.dump$/.test(filename);
+  return /^[a-z0-9-]+-\d{8}T\d{6}Z\.dump$/.test(filename);
 }
 
 export type { LastAttempt };

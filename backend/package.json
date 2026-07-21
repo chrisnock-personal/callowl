@@ -1,7 +1,7 @@
 {
-  "name": "open-cdr-platform-backend",
+  "name": "callowl-backend",
   "version": "0.1.0",
-  "description": "Open CDR Platform — ingest and serve Call Detail Records conforming to the Open CDR Standard",
+  "description": "CallOwl — ingest and serve Call Detail Records conforming to the Open CDR Standard",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",

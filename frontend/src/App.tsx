@@ -957,7 +957,7 @@ function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
           </div>
           <div style={{ lineHeight: 1.1 }}>
             <div style={{ fontWeight: 750, fontSize: 16, letterSpacing: -0.2 }}>
-              Open CDR Platform
+              CallOwl
             </div>
             <div style={{ fontSize: 11.5, color: C.textMuted }}>
               {pendingToken ? "Enter your verification code" : "Sign in to continue"}
@@ -1140,7 +1140,7 @@ function Header({
           </div>
           <div style={{ lineHeight: 1.1 }}>
             <div style={{ fontWeight: 750, fontSize: 16, letterSpacing: -0.2 }}>
-              Open CDR Platform
+              CallOwl
             </div>
             <div style={{ fontSize: 11.5, color: C.textMuted }}>
               Call detail records · open standard v{health?.apiVersion ?? "1.0.0"}
@@ -1458,7 +1458,7 @@ function HeaderMenu({
                   {backups.lastAttempt?.status === "failed" && (
                     <div style={{ fontSize: 11.5, color: C.rose, marginTop: 2 }}>
                       Last scheduled attempt ({fmtRelative(backups.lastAttempt.at)}) failed —
-                      check `podman logs opencdr-backup`.
+                      check `podman logs callowl-backup`.
                     </div>
                   )}
                   <div
@@ -1555,7 +1555,7 @@ function HeaderMenu({
                   </div>
                   {archivingIsStale && (
                     <div style={{ fontSize: 11.5, color: C.rose, marginTop: 2 }}>
-                      No WAL archived in over 10m — check `podman logs opencdr-db`
+                      No WAL archived in over 10m — check `podman logs callowl-db`
                       (MinIO/credentials?).
                     </div>
                   )}
@@ -1563,7 +1563,7 @@ function HeaderMenu({
                     <div style={{ fontSize: 11.5, color: C.rose, marginTop: 2 }}>
                       Last PITR base backup ({fmtRelative(lastBaseBackupAttempt.at)}){" "}
                       {lastBaseBackupAttempt.status === "failed" ? "failed" : "is overdue"} —
-                      check `podman logs opencdr-db`.
+                      check `podman logs callowl-db`.
                     </div>
                   )}
                   <div

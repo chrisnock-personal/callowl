@@ -1,4 +1,4 @@
-# Open CDR Platform
+# CallOwl
 
 A reference **call-logging platform** for the [Open CDR Standard](./backend/src/data/cdr-schema.yaml) — the vendor-neutral Call Detail Record schema. It ingests CDRs written to the standard, stores them, and serves the standard's read API (list, fetch, statistics, health) plus a dashboard for browsing calls, participants, and event timelines.
 
@@ -147,7 +147,7 @@ scripts/
 
 ## Backup & maintenance
 
-**Scheduled** — the `backup` compose service (plain `postgres:16-alpine`, which already ships `pg_dump`/`pg_restore`) runs `scripts/backup.sh` on a loop: dump on start, sleep `BACKUP_INTERVAL_HOURS` (default `24`), repeat. Dumps land in `./backups` on the host as `opencdr-<UTC timestamp>.dump` (custom pg_dump format, compressed), and each run prunes dumps older than `BACKUP_RETENTION_DAYS` (default `14`). Both are set in `.env`. Every run (success or failure) writes `./backups/.last-attempt`, surfaced in the dashboard's Backups panel — a backup more than two intervals overdue, or whose last scheduled attempt failed, renders as a warning there instead of failing silently (previously the only trace of a broken backup loop was `podman logs`).
+**Scheduled** — the `backup` compose service (plain `postgres:16-alpine`, which already ships `pg_dump`/`pg_restore`) runs `scripts/backup.sh` on a loop: dump on start, sleep `BACKUP_INTERVAL_HOURS` (default `24`), repeat. Dumps land in `./backups` on the host as `callowl-<UTC timestamp>.dump` (custom pg_dump format, compressed), and each run prunes dumps older than `BACKUP_RETENTION_DAYS` (default `14`). Both are set in `.env`. Every run (success or failure) writes `./backups/.last-attempt`, surfaced in the dashboard's Backups panel — a backup more than two intervals overdue, or whose last scheduled attempt failed, renders as a warning there instead of failing silently (previously the only trace of a broken backup loop was `podman logs`).
 
 **On-demand, from the dashboard** — the header menu (**⋯**, top right) has a full Backups panel: last-backup time and retention summary, a scrollable list of recent dumps with a **⬇ download** action each, a **Backup now** button, and a **Restore…** button (pick a `.dump` file, confirm, and it replaces the database outright via `pg_restore --clean --if-exists`). The backend carries its own `pg_dump`/`pg_restore` (installed from the versioned PGDG apt repo — Debian's default package is v15, and pg_dump refuses to dump a *newer* server than itself, so it has to match the v16 server) and mounts `./backups` read-write, alongside the scheduled service.
 
@@ -160,7 +160,7 @@ scripts/
 podman-compose run --rm --entrypoint sh backup /scripts/backup.sh
 
 # Restore a dump (drops and recreates conflicting objects — --clean --if-exists)
-podman-compose run --rm --entrypoint sh backup /scripts/restore.sh /backups/opencdr-<stamp>.dump
+podman-compose run --rm --entrypoint sh backup /scripts/restore.sh /backups/callowl-<stamp>.dump
 ```
 
 **Point-in-time recovery (PITR)** — a `pg_dump` only ever restores to the exact moment it was taken; anything written since is gone. `db` is a custom-built image (`postgres/Dockerfile`) that continuously archives WAL segments via `pgBackRest` to a self-hosted **MinIO** target (`minio`/`minio-init` compose services), with `archive_timeout=60` forcing a segment switch at least every minute even when idle. A background loop (`postgres/docker-entrypoint-wrapper.sh`) also takes a full base backup every `PITR_BACKUP_INTERVAL_HOURS` (default `24`). Together this can restore to *any point* since the oldest retained base backup, not just to a dump's exact moment — see **[DISASTER_RECOVERY.md](./DISASTER_RECOVERY.md)**'s Scenario C for the restore procedure. Both halves of PITR health (WAL-archiving freshness, straight from Postgres's own `pg_stat_archiver`; base-backup success, via the same `.last-attempt`-style marker file `pg_dump` uses) are surfaced in the same dashboard Backups panel as the pg_dump warning above.

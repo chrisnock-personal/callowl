@@ -35,7 +35,7 @@ AES-256-GCM keys (`backend/src/services/cryptoService.ts`) that encrypt stored d
 3. Restart the backend. At this point: decrypting existing data tries the new key first, falls back to `_PREVIOUS` automatically — nothing breaks. Any *new* write (a new/updated remote source credential, a new MFA enrollment) uses the new key only.
 4. Run the rotation script to force every *existing* row onto the new key too:
    ```bash
-   podman exec opencdr-backend npm run rotate-encryption-keys
+   podman exec callowl-backend npm run rotate-encryption-keys
    ```
    This re-encrypts every `remote_sources.auth_config` row and every non-null `users.mfa_secret_encrypted` row. Safe to re-run (idempotent — re-encrypting an already-current-key row just produces new ciphertext for the same plaintext).
 5. Verify before removing the old key: trigger a real remote-source poll and confirm it still authenticates correctly; confirm a real user with MFA enabled can still complete login.

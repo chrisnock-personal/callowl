@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Open CDR Platform — local / home-lab stack
+# CallOwl — local / home-lab stack
 #
 # Three services: PostgreSQL, the Node/Express API, and an nginx-served React UI.
 # A multi-service compose (rather than a single supervisord container) keeps each
@@ -11,11 +11,16 @@
 #
 # Then open the UI at http://localhost:${HTTP_PORT} (default 8080).
 # ─────────────────────────────────────────────────────────────────────────────
+# Pinned rather than left to default to the directory basename, so the
+# project identity (and therefore image/network names) doesn't shift if this
+# directory is ever moved or renamed again.
+name: callowl
+
 services:
   db:
     build:
       context: ./postgres
-    container_name: opencdr-db
+    container_name: callowl-db
     depends_on:
       - minio
     # Enables continuous WAL archiving to MinIO via pgBackRest (point-in-time
@@ -26,24 +31,24 @@ services:
     command: >
       postgres
       -c archive_mode=on
-      -c "archive_command=pgbackrest --stanza=opencdr archive-push %p"
+      -c "archive_command=pgbackrest --stanza=callowl archive-push %p"
       -c archive_timeout=60
     environment:
-      POSTGRES_DB: "${PGDATABASE:-opencdr}"
-      POSTGRES_USER: "${PGUSER:-opencdr}"
-      POSTGRES_PASSWORD: "${PGPASSWORD:-opencdr_pass}"
+      POSTGRES_DB: "${PGDATABASE:-callowl}"
+      POSTGRES_USER: "${PGUSER:-callowl}"
+      POSTGRES_PASSWORD: "${PGPASSWORD:-callowl_pass}"
       # pgBackRest reads these rather than pgbackrest.conf, so the secret
       # values stay out of the baked image — see postgres/pgbackrest.conf.
       PGBACKREST_REPO1_S3_KEY: "${MINIO_ROOT_USER:-opencdr-minio}"
       PGBACKREST_REPO1_S3_KEY_SECRET: "${MINIO_ROOT_PASSWORD:-change_me_minio}"
-      PGBACKREST_REPO1_S3_BUCKET: "${MINIO_BUCKET:-opencdr-pitr}"
+      PGBACKREST_REPO1_S3_BUCKET: "${MINIO_BUCKET:-callowl-pitr}"
       # Connects as $PGUSER, not the container's default OS user (root) —
       # POSTGRES_USER is the only superuser role that exists (the official
       # image doesn't also create a "postgres" role once it's renamed), and
       # there's no "root" role at all, so an unqualified connection fails
       # auth with "role \"root\" does not exist" before trust/peer rules
       # even come into play.
-      PGBACKREST_PG1_USER: "${PGUSER:-opencdr}"
+      PGBACKREST_PG1_USER: "${PGUSER:-callowl}"
       # How often docker-entrypoint-wrapper.sh's background loop takes a new
       # pgBackRest base backup — separate from BACKUP_INTERVAL_HOURS (the
       # existing pg_dump service), and from WAL archiving itself, which is
@@ -56,7 +61,7 @@ services:
       # read by GET /admin/backups) next to pg_dump's own .last-attempt.
       - ./backups:/backups:z
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-opencdr} -d ${PGDATABASE:-opencdr}"]
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-callowl} -d ${PGDATABASE:-callowl}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -65,7 +70,7 @@ services:
   backend:
     build:
       context: ./backend
-    container_name: opencdr-backend
+    container_name: callowl-backend
     depends_on:
       db:
         condition: service_healthy
@@ -74,9 +79,9 @@ services:
       NODE_ENV: "${NODE_ENV:-production}"
       PGHOST: db
       PGPORT: "5432"
-      PGDATABASE: "${PGDATABASE:-opencdr}"
-      PGUSER: "${PGUSER:-opencdr}"
-      PGPASSWORD: "${PGPASSWORD:-opencdr_pass}"
+      PGDATABASE: "${PGDATABASE:-callowl}"
+      PGUSER: "${PGUSER:-callowl}"
+      PGPASSWORD: "${PGPASSWORD:-callowl_pass}"
       PGSSL: "false"
       # "*" is fine for a local lab; set to your real origin(s) once this is
       # publicly reachable, as defense in depth (session auth doesn't rely on
@@ -128,7 +133,7 @@ services:
   frontend:
     build:
       context: ./frontend
-    container_name: opencdr-frontend
+    container_name: callowl-frontend
     depends_on:
       - backend
     ports:
@@ -152,7 +157,7 @@ services:
   minio:
     build:
       context: ./minio
-    container_name: opencdr-minio
+    container_name: callowl-minio
     environment:
       MINIO_ROOT_USER: "${MINIO_ROOT_USER:-opencdr-minio}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-change_me_minio}"
@@ -167,13 +172,13 @@ services:
   # starts — just needs to succeed eventually.
   minio-init:
     image: minio/mc:latest
-    container_name: opencdr-minio-init
+    container_name: callowl-minio-init
     depends_on:
       - minio
     environment:
       MINIO_ROOT_USER: "${MINIO_ROOT_USER:-opencdr-minio}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-change_me_minio}"
-      MINIO_BUCKET: "${MINIO_BUCKET:-opencdr-pitr}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-callowl-pitr}"
     entrypoint:
       - /bin/sh
       - -c
@@ -193,16 +198,16 @@ services:
   # logical dump has real value PITR doesn't replace, see DISASTER_RECOVERY.md.
   backup:
     image: postgres:16-alpine
-    container_name: opencdr-backup
+    container_name: callowl-backup
     depends_on:
       db:
         condition: service_healthy
     environment:
       PGHOST: db
       PGPORT: "5432"
-      PGDATABASE: "${PGDATABASE:-opencdr}"
-      PGUSER: "${PGUSER:-opencdr}"
-      PGPASSWORD: "${PGPASSWORD:-opencdr_pass}"
+      PGDATABASE: "${PGDATABASE:-callowl}"
+      PGUSER: "${PGUSER:-callowl}"
+      PGPASSWORD: "${PGPASSWORD:-callowl_pass}"
       BACKUP_DIR: /backups
       BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-14}"
       BACKUP_INTERVAL_HOURS: "${BACKUP_INTERVAL_HOURS:-24}"
@@ -220,7 +225,14 @@ services:
     restart: unless-stopped
 
 volumes:
+  # Pinned to their pre-rebrand physical names — these hold live data created
+  # under the "open-cdr-platform" project name, before "name: callowl" above
+  # was added. Without an explicit name here, compose would derive
+  # "callowl_pgdata"/"callowl_miniodata" instead and silently start the stack
+  # on brand-new, empty volumes rather than these.
   pgdata:
+    name: open-cdr-platform_pgdata
     driver: local
   miniodata:
+    name: open-cdr-platform_miniodata
     driver: local

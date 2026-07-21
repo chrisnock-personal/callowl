@@ -13,22 +13,22 @@ jobs:
         # Matches docker-compose.yml's `db` service image tag.
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: opencdr_test
-          POSTGRES_USER: opencdr
-          POSTGRES_PASSWORD: opencdr_test_pass
+          POSTGRES_DB: callowl_test
+          POSTGRES_USER: callowl
+          POSTGRES_PASSWORD: callowl_test_pass
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U opencdr -d opencdr_test"
+          --health-cmd "pg_isready -U callowl -d callowl_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
       PGHOST: localhost
       PGPORT: 5432
-      PGDATABASE: opencdr_test
-      PGUSER: opencdr
-      PGPASSWORD: opencdr_test_pass
+      PGDATABASE: callowl_test
+      PGUSER: callowl
+      PGPASSWORD: callowl_test_pass
     defaults:
       run:
         working-directory: backend

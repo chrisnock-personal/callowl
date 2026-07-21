@@ -97,7 +97,7 @@ app.use(
   `${BASE}/docs`,
   swaggerUi.serve,
   swaggerUi.setup(openApiSpec, {
-    customSiteTitle: "Open CDR Platform — API Docs",
+    customSiteTitle: "CallOwl — API Docs",
     swaggerOptions: { docExpansion: "list", filter: true, tagsSorter: "alpha" },
   })
 );

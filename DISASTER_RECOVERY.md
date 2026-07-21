@@ -10,7 +10,7 @@ Read [Known limitations](#known-limitations) before you need this — it says pl
 
 Scenario C (point-in-time restore) has its own self-contained steps below — these three don't apply there, since it restores to a *time* you choose, not a specific dump file.
 
-1. **Identify which dump to restore.** Backups are named `opencdr-<UTC timestamp>.dump` (e.g. `opencdr-20260714T100500Z.dump`) — pick the most recent one from *before* whatever went wrong. The dashboard's header menu (**⋯** → Backups) lists recent ones with relative ages; `ls -la ./backups` on the host shows all of them.
+1. **Identify which dump to restore.** Backups are named `callowl-<UTC timestamp>.dump` (e.g. `callowl-20260714T100500Z.dump`) — pick the most recent one from *before* whatever went wrong. Dumps from before the CallOwl rebrand are named `opencdr-<UTC timestamp>.dump` instead; both prefixes list and restore identically. The dashboard's header menu (**⋯** → Backups) lists recent ones with relative ages; `ls -la ./backups` on the host shows all of them.
 2. **`pg_restore --clean --if-exists` (what both the UI/API restore and `scripts/restore.sh` use) drops and recreates conflicting objects as it goes — the target database does not need to be empty first, and does not need the schema pre-created.** You are not choosing between "restore" and "wipe first, then restore" — restoring *is* the wipe-and-replace, in one step.
 3. **Restore has no undo.** Once it starts, whatever was in the target database before is gone. If there's any doubt about which dump to use, take a fresh backup of the current (possibly-broken) state first — worst case you can compare it against the one you're about to restore.
 
@@ -28,7 +28,7 @@ Data corruption, an accidental delete, a bad migration, a bad ingest — the con
    - **Dashboard**: header menu (**⋯**) → Backups → **Restore…** → pick the `.dump` file → confirm the `window.confirm` prompt.
    - **CLI**:
      ```bash
-     podman-compose run --rm --entrypoint sh backup /scripts/restore.sh /backups/opencdr-<stamp>.dump
+     podman-compose run --rm --entrypoint sh backup /scripts/restore.sh /backups/callowl-<stamp>.dump
      ```
    - **API**: `POST /admin/backups/restore` with the raw `.dump` file as the body, `X-API-Key: <ADMIN_API_KEY>` if configured.
 3. Run the [post-restore verification checklist](#post-restore-verification-checklist) below.
@@ -59,6 +59,8 @@ Data corruption, a bad migration, or an accidental delete where you know (or can
 
 **This is a materially different procedure from Scenario A** — it operates on Postgres's own physical data directory, not a live `pg_restore` connection, and requires stopping `db` entirely for the duration.
 
+**Stanza cutover note (CallOwl rebrand):** the pgBackRest stanza was cut over from `opencdr` to `callowl` during the rebrand — pgBackRest has no in-place rename, so this was a fresh stanza/bucket rather than a renamed one. **Targeting a time at or after the cutover** uses `--stanza=callowl` and the current `.env`'s `MINIO_BUCKET` (`callowl-pitr`) as shown below. **Targeting a time before the cutover** needs `--stanza=opencdr` instead, plus `-e PGBACKREST_REPO1_S3_BUCKET=opencdr-pitr` explicitly (don't rely on `$MINIO_BUCKET` from the current `.env` — it now points at the new bucket) — the old stanza's backup chain is still physically present and untouched, just no longer extended.
+
 1. **Pick your target time**, as precise as you can get, in UTC (`YYYY-MM-DD HH:MM:SS`) — pgBackRest replays WAL up to (but not past) this point. If in doubt, err slightly *earlier* than the incident; you can always re-run with a later target, but you can't recover data written after whatever point you restore to without redoing the whole restore.
 2. **Stop the stack** (data is unreachable during the restore regardless):
    ```bash
@@ -68,22 +70,23 @@ Data corruption, a bad migration, or an accidental delete where you know (or can
    ```bash
    podman run --rm \
      -v open-cdr-platform_pgdata:/var/lib/postgresql/data \
-     --network open-cdr-platform_default \
+     --network callowl_default \
      -e PGBACKREST_REPO1_S3_KEY="$MINIO_ROOT_USER" \
      -e PGBACKREST_REPO1_S3_KEY_SECRET="$MINIO_ROOT_PASSWORD" \
      -e PGBACKREST_REPO1_S3_BUCKET="$MINIO_BUCKET" \
      --user postgres \
      --entrypoint pgbackrest \
-     localhost/open-cdr-platform_db:latest \
-     --stanza=opencdr --type=time --target="2026-07-15 14:30:00" --delta restore
+     localhost/callowl_db:latest \
+     --stanza=callowl --type=time --target="2026-07-22 14:30:00" --delta restore
    ```
+   (The `-v open-cdr-platform_pgdata` volume name is intentionally still the pre-rebrand name — see `docker-compose.yml`'s `volumes:` section; it was deliberately pinned rather than migrated.)
    `--entrypoint pgbackrest` overrides the image's default entrypoint (the pgBackRest-init wrapper around Postgres's own startup, which isn't what you want for a one-off restore command).
    `--delta` restores only what's actually changed rather than requiring a fully empty data directory first — safe to run directly against `db`'s existing (stopped) volume.
 4. **Start `db` back up normally:**
    ```bash
    podman-compose up -d db
    ```
-   Postgres itself detects it's in recovery, replays the archived WAL up to your target time, and reaches a consistent state automatically — there's no separate "apply the WAL" step to run by hand. Watch `podman logs opencdr-db` for `database system is ready to accept connections`, and confirm the healthcheck (`podman ps`) reports healthy before continuing.
+   Postgres itself detects it's in recovery, replays the archived WAL up to your target time, and reaches a consistent state automatically — there's no separate "apply the WAL" step to run by hand. Watch `podman logs callowl-db` for `database system is ready to accept connections`, and confirm the healthcheck (`podman ps`) reports healthy before continuing.
 5. **Start the backend back up:**
    ```bash
    podman-compose up -d backend
@@ -100,12 +103,12 @@ Run these after *any* restore, before considering the incident closed.
 
 1. **Migrations table matches the repo.** `backend/src/migrations/` currently has 8 files; `schema_migrations` should have exactly that many rows:
    ```bash
-   podman exec opencdr-db psql -U "$PGUSER" -d "$PGDATABASE" -c "SELECT count(*) FROM schema_migrations;"
+   podman exec callowl-db psql -U "$PGUSER" -d "$PGDATABASE" -c "SELECT count(*) FROM schema_migrations;"
    ```
    A mismatch means you restored a dump from before/after a schema change relative to the code currently deployed — investigate before trusting anything else.
 2. **`call_records` row count is sane** — not zero (unless you genuinely expected an empty store), not wildly different from what you'd expect for the dump's age:
    ```bash
-   podman exec opencdr-db psql -U "$PGUSER" -d "$PGDATABASE" -c "SELECT count(*) FROM call_records;"
+   podman exec callowl-db psql -U "$PGUSER" -d "$PGDATABASE" -c "SELECT count(*) FROM call_records;"
    ```
 3. **Login works** — proves the `users`/`sessions` tables survived the restore intact, not just `call_records`. Log into the dashboard with a real account.
 4. **Spot-check one known record** — open a record in the dashboard you know should exist (by `callId`, via the Filters popover's Call ID field) and confirm its content looks right, not just that *a* row exists.
@@ -116,7 +119,7 @@ If any of these fail, do not assume the restore is "mostly fine" — figure out 
 
 ## Known limitations
 
-- **Point-in-time restore (Scenario C) only covers what's been continuously archived.** If WAL archiving itself was ever broken (MinIO unreachable, a misconfigured key) for a stretch of time, that stretch can't be recovered — check `podman logs opencdr-db` for `[pgbackrest-init]`/`[pgbackrest-backup]` lines, and `pgbackrest info` (run inside the `db` container) to confirm archiving has actually been healthy; don't just assume it has been.
+- **Point-in-time restore (Scenario C) only covers what's been continuously archived.** If WAL archiving itself was ever broken (MinIO unreachable, a misconfigured key) for a stretch of time, that stretch can't be recovered — check `podman logs callowl-db` for `[pgbackrest-init]`/`[pgbackrest-backup]` lines, and `pgbackrest info` (run inside the `db` container) to confirm archiving has actually been healthy; don't just assume it has been.
 - **Single-host only.** MinIO and Postgres are separate containers but run on the same host — this protects against the corruption/bad-migration/accidental-delete scenarios PITR exists for, but MinIO's own data lives in a volume on that same host, so it does **not** by itself protect against the full host loss Scenario B describes, the way an off-host `pg_dump` copy would.
 - **Backups are not copied off-host automatically.** `./backups` lives on the same host as the database it's backing up. A full host loss (Scenario B) is only survivable if *you* have separately copied `.dump` files elsewhere (another host, object storage, wherever) — this platform doesn't do that step for you today.
 - **Restore replaces the whole database, not selected tables/rows.** There's no partial/selective restore — it's all-or-nothing via `pg_restore --clean --if-exists`.
