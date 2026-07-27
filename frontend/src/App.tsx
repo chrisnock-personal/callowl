@@ -415,6 +415,8 @@ export default function App() {
   const [pagination, setPagination] = useState<Pagination | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefreshSeconds, setAutoRefreshSeconds] = useState(30);
   const [stats, setStats] = useState<StatisticsSummary | null>(null);
   const [talkersInternal, setTalkersInternal] = useState<TopTalker[]>([]);
   const [talkersExternal, setTalkersExternal] = useState<TopTalker[]>([]);
@@ -536,6 +538,23 @@ export default function App() {
   useEffect(() => {
     api.health().then(setHealth).catch(() => setHealth(null));
   }, []);
+
+  // Ticks on a fixed wall-clock interval rather than chaining off the previous
+  // load's completion, so a slow request doesn't compound into an ever-drifting
+  // refresh cadence. Skips a tick that lands while the previous one is still in
+  // flight (via the ref, since the interval closure captures `loading` at
+  // creation time) instead of piling up overlapping requests.
+  const loadingRef = React.useRef(loading);
+  useEffect(() => {
+    loadingRef.current = loading;
+  }, [loading]);
+  useEffect(() => {
+    if (!authUser || !autoRefresh) return;
+    const id = setInterval(() => {
+      if (!loadingRef.current) load();
+    }, autoRefreshSeconds * 1000);
+    return () => clearInterval(id);
+  }, [authUser, autoRefresh, autoRefreshSeconds, load]);
 
   const applyFilters = () => {
     setPage(1);
@@ -784,6 +803,10 @@ export default function App() {
           onLookupCallId={lookupCallId}
           onApply={applyFilters}
           onClear={clearFilters}
+          autoRefresh={autoRefresh}
+          autoRefreshSeconds={autoRefreshSeconds}
+          onToggleAutoRefresh={() => setAutoRefresh((v) => !v)}
+          onAutoRefreshSecondsChange={setAutoRefreshSeconds}
           showExport={!!pagination && pagination.totalRecords > 0}
           exporting={exporting}
           onExport={handleExport}
@@ -4165,6 +4188,10 @@ function FilterBar(props: {
   onLookupCallId: () => Promise<boolean>;
   onApply: () => void;
   onClear: () => void;
+  autoRefresh: boolean;
+  autoRefreshSeconds: number;
+  onToggleAutoRefresh: () => void;
+  onAutoRefreshSecondsChange: (n: number) => void;
   showExport: boolean;
   exporting: boolean;
   onExport: (format: "csv" | "json") => void;
@@ -4506,6 +4533,40 @@ function FilterBar(props: {
       >
         Apply
       </button>
+
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
+        <button
+          onClick={props.onToggleAutoRefresh}
+          title={props.autoRefresh ? "Auto-refresh on" : "Auto-refresh off"}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 7,
+            padding: "8px 14px",
+            borderRadius: 8,
+            border: `1px solid ${props.autoRefresh ? C.accent : C.border}`,
+            background: props.autoRefresh ? C.accentSoft : C.surface,
+            color: props.autoRefresh ? C.accentDeep : C.ink,
+            fontSize: 13,
+            fontWeight: 650,
+            cursor: "pointer",
+          }}
+        >
+          {props.autoRefresh ? "⟳ Auto-refresh on" : "⟳ Auto-refresh"}
+        </button>
+        {props.autoRefresh && (
+          <select
+            value={props.autoRefreshSeconds}
+            onChange={(e) => props.onAutoRefreshSecondsChange(Number(e.target.value))}
+            style={{ ...inputStyle, minWidth: 90 }}
+          >
+            <option value={15}>15s</option>
+            <option value={30}>30s</option>
+            <option value={60}>1m</option>
+            <option value={300}>5m</option>
+          </select>
+        )}
+      </div>
 
       {props.showExport && (
         <div style={{ marginLeft: "auto" }}>
