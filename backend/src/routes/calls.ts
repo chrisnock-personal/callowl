@@ -32,6 +32,7 @@ const listQuerySchema = z.object({
   queue: csv,
   ivr: csv,
   advanced: z.string().trim().min(1).optional(),
+  sort: z.enum(["asc", "desc"]).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(1000).default(100),
 });
@@ -64,6 +65,7 @@ router.get("/", requireAuth, async (req: Request, res: Response, next: NextFunct
       queue: q.queue,
       ivr: q.ivr,
       advanced: q.advanced,
+      sort: q.sort,
       page: q.page,
       pageSize: q.pageSize,
     });

@@ -14,6 +14,7 @@ export interface ListFilters {
   queue?: string[]; // platform extension — matches callSource.queueInfo, OR across values
   ivr?: string[]; // platform extension — matches callSource.ivrInfo, OR across values
   advanced?: string; // platform extension — "mos < 3, jitter > 50" style numeric conditions
+  sort?: "asc" | "desc"; // platform extension — defaults to "asc" per the standard
   page: number;
   pageSize: number;
 }
@@ -21,10 +22,12 @@ export interface ListFilters {
 /**
  * GET /calls. Filters on the query window, media type, groups and tenant (the
  * standard's documented filters), plus sourcePlatformId, participant search,
- * queue, ivr, and advanced numeric conditions (platform extensions — not part
- * of the standard's documented API, same as /calls/ingest). Returns a page
- * ordered by order_time ascending (lastUpdateTime, falling back to endTime
- * then startTime), exactly as the standard documents.
+ * queue, ivr, advanced numeric conditions, and sort direction (platform
+ * extensions — not part of the standard's documented API, same as
+ * /calls/ingest). Defaults to a page ordered by order_time ascending
+ * (lastUpdateTime, falling back to endTime then startTime), exactly as the
+ * standard documents — callers that want the latest calls first (e.g. this
+ * platform's own dashboard) pass sort=desc explicitly.
  */
 export async function listCallRecords(
   f: ListFilters
@@ -95,11 +98,13 @@ export async function listCallRecords(
   const offset = (f.page - 1) * f.pageSize;
   params.push(limit, offset);
 
+  const dir = f.sort === "desc" ? "DESC" : "ASC";
+
   const rows = await query<{ record: CallRecord }>(
     `SELECT record
        FROM call_records
       WHERE ${whereSql}
-      ORDER BY order_time ASC, id ASC
+      ORDER BY order_time ${dir}, id ${dir}
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   );

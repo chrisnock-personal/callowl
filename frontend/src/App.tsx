@@ -55,6 +55,10 @@ const C = {
   roseSoft: "#FBE6EB",
   violet: "#6B4BD1",
   violetSoft: "#ECE7FB",
+  // Owl wordmark only — the rest of the app has no brown/tawny tone.
+  feather: "#8B5E3C",
+  featherDark: "#6B4526",
+  featherLight: "#EAD9BE",
 };
 
 const MONO = "ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace";
@@ -298,6 +302,27 @@ function auditLogToCsv(entries: AuditLogEntry[]): string {
 }
 
 // ─── Small UI atoms ───────────────────────────────────────────────────────────
+/** The CallOwl wordmark. Cropped to body/face/eyes/beak — no ear tufts, wings,
+ * or feet — since those only read at the larger sizes on the logo review page. */
+function OwlMark({ size = 34 }: { size?: number }) {
+  return (
+    <svg viewBox="52 44 116 142" width={size} height={size} aria-hidden="true">
+      <path
+        d="M110,50 C145,50 162,80 160,120 C158,158 138,180 110,180 C82,180 62,158 60,120 C58,80 75,50 110,50 Z"
+        fill={C.feather}
+      />
+      <ellipse cx="110" cy="100" rx="46" ry="44" fill={C.featherLight} />
+      <circle cx="90" cy="98" r="19" fill={C.amber} />
+      <circle cx="130" cy="98" r="19" fill={C.amber} />
+      <circle cx="90" cy="100" r="9.5" fill={C.ink} />
+      <circle cx="130" cy="100" r="9.5" fill={C.ink} />
+      <circle cx="94.5" cy="94.5" r="3" fill="#FFFFFF" />
+      <circle cx="134.5" cy="94.5" r="3" fill="#FFFFFF" />
+      <path d="M110,112 L102,124 L110,136 L118,124 Z" fill={C.ink} />
+    </svg>
+  );
+}
+
 function Pill({
   fg,
   bg,
@@ -463,6 +488,7 @@ export default function App() {
           queue: queue || undefined,
           ivr: ivr || undefined,
           advanced: advanced || undefined,
+          sort: "desc",
           page,
           pageSize,
         }),
@@ -939,31 +965,29 @@ function LoginScreen({ onLogin }: { onLogin: (user: AuthUser) => void }) {
           padding: 28,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 22 }}>
-          <div
-            style={{
-              width: 34,
-              height: 34,
-              borderRadius: 9,
-              background: C.accent,
-              display: "grid",
-              placeItems: "center",
-              color: "#fff",
-              fontSize: 17,
-              boxShadow: `0 2px 8px ${C.accent}44`,
-            }}
-          >
-            ◍
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            textAlign: "center",
+            marginBottom: 28,
+          }}
+        >
+          <div style={{ marginBottom: 14 }}>
+            <OwlMark size={48} />
           </div>
-          <div style={{ lineHeight: 1.1 }}>
-            <div style={{ fontWeight: 750, fontSize: 16, letterSpacing: -0.2 }}>
-              CallOwl
-            </div>
-            <div style={{ fontSize: 11.5, color: C.textMuted }}>
-              {pendingToken ? "Enter your verification code" : "Sign in to continue"}
-            </div>
+          <div style={{ fontWeight: 750, fontSize: 22, letterSpacing: -0.3 }}>CallOwl</div>
+          <div style={{ fontSize: 13, color: C.textMuted, marginTop: 4 }}>
+            Call Record Logging
           </div>
         </div>
+
+        {pendingToken && (
+          <div style={{ textAlign: "center", fontSize: 13, color: C.textMuted, marginBottom: 18 }}>
+            Enter your verification code
+          </div>
+        )}
 
         {pendingToken ? (
           <div style={{ marginBottom: 18 }}>
@@ -1123,27 +1147,13 @@ function Header({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
-          <div
-            style={{
-              width: 34,
-              height: 34,
-              borderRadius: 9,
-              background: C.accent,
-              display: "grid",
-              placeItems: "center",
-              color: "#fff",
-              fontSize: 17,
-              boxShadow: `0 2px 8px ${C.accent}44`,
-            }}
-          >
-            ◍
-          </div>
+          <OwlMark size={34} />
           <div style={{ lineHeight: 1.1 }}>
             <div style={{ fontWeight: 750, fontSize: 16, letterSpacing: -0.2 }}>
               CallOwl
             </div>
             <div style={{ fontSize: 11.5, color: C.textMuted }}>
-              Call detail records · open standard v{health?.apiVersion ?? "1.0.0"}
+              Call Record Logging
             </div>
           </div>
         </div>

@@ -202,6 +202,7 @@ export interface ListParams {
   queue?: string;
   ivr?: string;
   advanced?: string;
+  sort?: "asc" | "desc";
   page?: number;
   pageSize?: number;
 }
