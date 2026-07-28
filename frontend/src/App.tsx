@@ -551,10 +551,23 @@ export default function App() {
   useEffect(() => {
     if (!authUser || !autoRefresh) return;
     const id = setInterval(() => {
-      if (!loadingRef.current) load();
+      if (loadingRef.current) return;
+      // A rolling preset ("last 24 hours" etc.) has to re-anchor to "now" on
+      // every tick, or auto-refresh just keeps re-querying the exact window
+      // that was frozen in state when the page first loaded and newly
+      // arrived calls at the leading edge never show up. Custom ranges are
+      // fixed on purpose, so those just re-fetch as-is.
+      const range = datePreset !== "custom" ? computePresetRange(datePreset) : null;
+      if (range) {
+        setStartTime(range.start);
+        setEndTime(range.end);
+        setPage(1);
+      } else {
+        load();
+      }
     }, autoRefreshSeconds * 1000);
     return () => clearInterval(id);
-  }, [authUser, autoRefresh, autoRefreshSeconds, load]);
+  }, [authUser, autoRefresh, autoRefreshSeconds, datePreset, load]);
 
   const applyFilters = () => {
     setPage(1);
