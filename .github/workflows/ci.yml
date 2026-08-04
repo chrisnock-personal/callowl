@@ -37,10 +37,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run build
       - run: npm test
+      # --omit=dev: the backend Dockerfile's runtime stage does `npm install
+      # --omit=dev`, so devDependencies (ts-node-dev, vitest, etc.) never
+      # ship — a transitive dev-only advisory here shouldn't block CI.
+      - run: npm audit --omit=dev --audit-level=high
 
   frontend:
     runs-on: ubuntu-latest
@@ -52,6 +58,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - name: Type-check (ignoring documented pre-existing qs() errors)
         # See CLAUDE.md: 4 pre-existing, harmless errors on
@@ -67,3 +75,40 @@ jobs:
             exit 1
           fi
       - run: npm run build
+      # --omit=dev: this package's only runtime dependencies are
+      # react/react-dom — everything else (vite, the TS toolchain) is a
+      # build-time tool whose output never ships (this is a statically-built
+      # frontend served by nginx, never a running dev server).
+      - run: npm audit --omit=dev --audit-level=high
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the full compose stack
+        run: docker compose build
+      - name: Boot the stack
+        run: docker compose up -d
+      - name: Smoke test — wait for backend /health via the frontend proxy
+        # No .env file needed: every docker-compose.yml var has a "${VAR:-default}"
+        # fallback (see docker-compose.yml's `name:` header comment), so the
+        # default credentials are fine for an ephemeral CI stack. Polling through
+        # the frontend's nginx :80->HTTP_PORT mapping (not the backend directly,
+        # which publishes no host port) matches how the stack is actually reached
+        # in production — see frontend/nginx.conf's /api/ proxy_pass.
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/api/cdr/v1/health > /dev/null; then
+              echo "Backend /health is up via the frontend proxy."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Stack did not become healthy in time."
+          exit 1
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
