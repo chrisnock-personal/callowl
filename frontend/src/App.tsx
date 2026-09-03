@@ -20,6 +20,7 @@ import {
   IvrBreakdown,
   BackupStatus,
   CertInfo,
+  ConfigImportResult,
   AuthUser,
   MfaEnrollment,
   ManagedUser,
@@ -1731,6 +1732,12 @@ function HeaderMenu({
                 </div>
               )}
             </div>
+            {authUser.role === "admin" && (
+              <>
+                <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
+                <ConfigExportImportSection authUser={authUser} />
+              </>
+            )}
             <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
             <a
               href="/api/cdr/v1/docs"
@@ -2554,6 +2561,206 @@ function MfaDisableModal({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Admin-only — reveals every username/role/scope and remote source
+// definition on the platform at once (see the matching comment on the
+// backend routes), unlike the rest of this dropdown's sections which mostly
+// stay visible read-only to any logged-in user.
+function ConfigExportImportSection({ authUser }: { authUser: AuthUser }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [result, setResult] = useState<ConfigImportResult | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  if (authUser.role !== "admin") return null;
+
+  const handleExport = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const bundle = await api.exportConfig();
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `callowl-config-${bundle.exportedAt.replace(/[:.]/g, "-")}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Export failed" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleImportFile = async (file: File) => {
+    setBusy(true);
+    setMsg(null);
+    setResult(null);
+    try {
+      const bundle = JSON.parse(await file.text());
+      setResult(await api.importConfig(bundle));
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Import failed — is this a valid export file?" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const secretBox = (lines: string[]): React.ReactNode => (
+    <div
+      style={{
+        marginTop: 6,
+        padding: "8px 9px",
+        borderRadius: 6,
+        background: C.tealSoft,
+        border: `1px solid ${C.teal}44`,
+        maxHeight: 140,
+        overflowY: "auto",
+      }}
+    >
+      <div style={{ fontSize: 11, color: C.teal, fontWeight: 650, marginBottom: 4 }}>
+        Copy these now — shown once:
+      </div>
+      {lines.map((l, i) => (
+        <div
+          key={i}
+          style={{
+            fontFamily: MONO,
+            fontSize: 11,
+            color: C.ink,
+            background: C.surface,
+            border: `1px solid ${C.border}`,
+            borderRadius: 5,
+            padding: "4px 6px",
+            marginTop: i > 0 ? 3 : 0,
+            wordBreak: "break-all",
+          }}
+        >
+          {l}
+        </div>
+      ))}
+    </div>
+  );
+
+  return (
+    <div style={{ padding: "8px 10px" }}>
+      <div
+        style={{
+          fontSize: 10.5,
+          letterSpacing: 0.5,
+          textTransform: "uppercase",
+          color: C.textMuted,
+          fontWeight: 700,
+          marginBottom: 6,
+        }}
+      >
+        Config export/import
+      </div>
+      <div style={{ fontSize: 11.5, color: C.textMuted, marginBottom: 6 }}>
+        Users, API key names, and remote source definitions — never a password, key value, or
+        remote source credential (see README).
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <button
+          onClick={handleExport}
+          disabled={busy}
+          style={{
+            flex: 1,
+            padding: "7px 10px",
+            borderRadius: 6,
+            border: `1px solid ${C.border}`,
+            background: C.surfaceAlt,
+            color: C.textMid,
+            fontSize: 12,
+            fontWeight: 650,
+            cursor: busy ? "default" : "pointer",
+          }}
+        >
+          Export
+        </button>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={busy}
+          style={{
+            flex: 1,
+            padding: "7px 10px",
+            borderRadius: 6,
+            border: "none",
+            background: busy ? C.borderStrong : C.ink,
+            color: "#fff",
+            fontSize: 12,
+            fontWeight: 650,
+            cursor: busy ? "default" : "pointer",
+          }}
+        >
+          Import…
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/json"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) handleImportFile(file);
+            e.target.value = "";
+          }}
+        />
+      </div>
+
+      {msg && (
+        <div style={{ fontSize: 11.5, color: msg.ok ? C.teal : C.rose, marginTop: 6 }}>
+          {msg.text}
+        </div>
+      )}
+
+      {result && (
+        <div style={{ marginTop: 8, fontSize: 11.5, color: C.textMid }}>
+          <div>
+            Users: {result.users.created.length} created, {result.users.skipped.length} skipped
+          </div>
+          {result.users.created.length > 0 &&
+            secretBox(result.users.created.map((u) => `${u.username} : ${u.password}`))}
+
+          <div style={{ marginTop: 6 }}>
+            API keys: {result.apiKeys.created.length} created, {result.apiKeys.skipped.length}{" "}
+            skipped
+          </div>
+          {result.apiKeys.created.length > 0 &&
+            secretBox(result.apiKeys.created.map((k) => `${k.username} / ${k.name} : ${k.key}`))}
+
+          {result.remoteSources.length > 0 && (
+            <>
+              <div style={{ marginTop: 6 }}>
+                Remote sources in bundle ({result.remoteSources.length}) — not auto-created, add
+                each manually with a real credential:
+              </div>
+              <div
+                style={{
+                  marginTop: 4,
+                  fontFamily: MONO,
+                  fontSize: 11,
+                  color: C.textMuted,
+                  maxHeight: 100,
+                  overflowY: "auto",
+                }}
+              >
+                {result.remoteSources.map((s) => (
+                  <div key={s.name}>
+                    {s.name} — {s.baseUrl} ({s.authType})
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

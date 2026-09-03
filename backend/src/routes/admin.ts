@@ -18,6 +18,7 @@ import {
 import { getArchiverStatus, getBaseBackupLastAttempt } from "../db/pitr";
 import { getCurrentCertInfo, stageCertForReload, waitForReload } from "../db/tlsCert";
 import { isStatusPageEnabled, setStatusPageEnabled } from "../services/statusPageService";
+import { exportConfig, importConfig, ConfigBundle } from "../services/configExportService";
 import {
   createUser,
   listUsers,
@@ -543,6 +544,74 @@ router.get(
 
       const q = remoteSourceRejectsQuerySchema.parse(req.query);
       res.json(await listRemoteSourceRejects(id, q.page, q.pageSize));
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * Config export/import (platform extension) — admin-only, both read and
+ * write, unlike the read-only endpoints above that stay open to any logged-in
+ * user: this reveals every username/role/scope and remote source definition
+ * on the platform at once, a materially bigger disclosure than one backup's
+ * metadata or a TLS cert's expiry. See services/configExportService.ts for
+ * why no secret (password, API key value, remote source credential) is ever
+ * in the exported bundle, and how import still avoids re-typing everything
+ * else when standing up a second environment.
+ */
+router.get(
+  "/config-export",
+  requireAuth,
+  requireAdmin,
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      res.json(await exportConfig());
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+const configImportSchema = z.object({
+  users: z
+    .array(
+      z.object({
+        username: z.string().min(1),
+        role: z.enum(["admin", "viewer"]),
+        allowedGroups: scopeField,
+        allowedSourcePlatformIds: scopeField,
+      })
+    )
+    .default([]),
+  apiKeys: z
+    .array(z.object({ username: z.string().min(1), name: z.string().min(1) }))
+    .default([]),
+  // Never written to the database (see services/configExportService.ts) —
+  // validated just enough to display back cleanly, not against
+  // remoteSourceAuthSchema above, since a credential is never present here.
+  remoteSources: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        baseUrl: z.string(),
+        authType: z.enum(["api_key", "oauth2_client_credentials", "custom"]),
+        pollIntervalMinutes: z.number(),
+        backfillFrom: z.string(),
+        enabled: z.boolean(),
+      })
+    )
+    .default([]),
+});
+
+router.post(
+  "/config-import",
+  requireAuth,
+  requireAdmin,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const bundle = configImportSchema.parse(req.body);
+      res.json(await importConfig(bundle as Partial<ConfigBundle>));
     } catch (err) {
       next(err);
     }

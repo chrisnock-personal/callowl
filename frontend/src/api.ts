@@ -338,6 +338,46 @@ export interface PublicStatus {
   components: PublicStatusComponent[];
 }
 
+export interface ConfigExportUser {
+  username: string;
+  role: "admin" | "viewer";
+  allowedGroups: string[] | null;
+  allowedSourcePlatformIds: string[] | null;
+}
+
+export interface ConfigExportApiKey {
+  username: string;
+  name: string;
+}
+
+export interface ConfigExportRemoteSource {
+  name: string;
+  baseUrl: string;
+  authType: "api_key" | "oauth2_client_credentials" | "custom";
+  pollIntervalMinutes: number;
+  backfillFrom: string;
+  enabled: boolean;
+}
+
+export interface ConfigBundle {
+  exportedAt: string;
+  users: ConfigExportUser[];
+  apiKeys: ConfigExportApiKey[];
+  remoteSources: ConfigExportRemoteSource[];
+}
+
+export interface ConfigImportResult {
+  users: {
+    created: { username: string; password: string }[];
+    skipped: { username: string; reason: string }[];
+  };
+  apiKeys: {
+    created: { username: string; name: string; key: string }[];
+    skipped: { username: string; name: string; reason: string }[];
+  };
+  remoteSources: ConfigExportRemoteSource[];
+}
+
 export interface CertInfo {
   subject: string;
   issuer: string;
@@ -630,6 +670,14 @@ export const api = {
     request<{ enabled: boolean }>(`/admin/status-page`, {
       method: "POST",
       body: JSON.stringify({ enabled }),
+    }),
+
+  exportConfig: () => request<ConfigBundle>(`/admin/config-export`),
+
+  importConfig: (bundle: ConfigBundle) =>
+    request<ConfigImportResult>(`/admin/config-import`, {
+      method: "POST",
+      body: JSON.stringify(bundle),
     }),
 
   tlsStatus: () => request<CertInfo | null>(`/admin/tls`),
