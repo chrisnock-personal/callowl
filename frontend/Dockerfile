@@ -1,5 +1,10 @@
 # ── Build stage ───────────────────────────────────────────────────────────────
 FROM node:20-slim AS build
+# See backend/Dockerfile's matching ENV for why — an npm install stalling for
+# minutes on a blackholed IPv6 route to registry.npmjs.org, in an environment
+# where curl to the same host succeeds instantly, is a real failure mode
+# here, not a hypothetical one.
+ENV NODE_OPTIONS=--dns-result-order=ipv4first
 WORKDIR /app
 COPY package.json ./
 RUN npm install

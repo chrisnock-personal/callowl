@@ -1,5 +1,19 @@
+# npm has no Happy-Eyeballs-style fast IPv4 fallback the way curl does — a
+# registry.npmjs.org DNS answer that includes a AAAA record npm happens to
+# pick, in an environment where IPv6 egress is silently dropped rather than
+# actively refused, means npm hangs on that connection for minutes instead of
+# failing fast, even though curl against the exact same host succeeds
+# immediately (confirmed the hard way: repeated `npm install` stalls with
+# ~15s of real CPU time spread across 5+ minutes of wall time, while `curl`
+# and a single `node -e https.get(...)` against the same registry URL both
+# returned instantly). ipv4first doesn't disable IPv6, just deprioritizes it
+# when both are available — harmless if this environment's IPv6 is actually
+# fine. Set per-stage (ENV can't precede a Dockerfile's first FROM) — both
+# stages here run npm install.
+
 # ── Build stage ───────────────────────────────────────────────────────────────
 FROM node:20-slim AS build
+ENV NODE_OPTIONS=--dns-result-order=ipv4first
 WORKDIR /app
 COPY package.json ./
 RUN npm install
@@ -10,6 +24,7 @@ RUN npm run build
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-slim AS runtime
 ENV NODE_ENV=production
+ENV NODE_OPTIONS=--dns-result-order=ipv4first
 WORKDIR /app
 
 # pg_dump/pg_restore for the on-demand backup/restore endpoints (the scheduled
