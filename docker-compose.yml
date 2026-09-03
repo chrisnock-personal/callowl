@@ -101,11 +101,19 @@ services:
       # — needed here too so GET /admin/backups can compute base-backup
       # staleness for the dashboard's PITR health warning.
       PITR_BACKUP_INTERVAL_HOURS: "${PITR_BACKUP_INTERVAL_HOURS:-24}"
+      # Read here only to report "configured?" + interval on GET /admin/backups
+      # — the actual sync credentials live on the `offsite-backup` service.
+      OFFSITE_S3_ENDPOINT: "${OFFSITE_S3_ENDPOINT:-}"
+      OFFSITE_SYNC_INTERVAL_HOURS: "${OFFSITE_SYNC_INTERVAL_HOURS:-24}"
       # Dashboard/API login — always required, no open mode. Bootstrap admin
       # is created on first boot if no users exist yet; see .env.example.
       BOOTSTRAP_ADMIN_USERNAME: "${BOOTSTRAP_ADMIN_USERNAME:-admin}"
       BOOTSTRAP_ADMIN_PASSWORD: "${BOOTSTRAP_ADMIN_PASSWORD:-}"
-      COOKIE_SECURE: "${COOKIE_SECURE:-false}"
+      # Defaults to true here (unlike the code-level default in
+      # backend/src/config/index.ts) since the frontend nginx container
+      # terminates HTTPS by default — see docker-compose.yml's `frontend`
+      # service and frontend/docker-entrypoint.sh.
+      COOKIE_SECURE: "${COOKIE_SECURE:-true}"
       # How long audit_log entries are kept (pruned on boot and daily).
       AUDIT_LOG_RETENTION_DAYS: "${AUDIT_LOG_RETENTION_DAYS:-90}"
       # Only required if a remote source is configured (⋯ menu → Remote
@@ -123,11 +131,23 @@ services:
       MFA_ENC_KEY: "${MFA_ENC_KEY:-}"
       # Set only during a rotation window — see SECRETS_ROTATION.md.
       MFA_ENC_KEY_PREVIOUS: "${MFA_ENC_KEY_PREVIOUS:-}"
+      # Shared with `frontend`'s /etc/nginx/certs (same `certs` volume,
+      # different mount point) so GET/POST /admin/tls can read/replace the
+      # certificate nginx serves — see backend/src/db/tlsCert.ts and
+      # frontend/cert-watcher.sh.
+      TLS_CERTS_DIR: /app/certs
+      # Outbound alerting on backup/PITR/off-host-sync staleness and
+      # remote-source poll failures (services/alertService.ts) — left unset,
+      # the scheduled check still runs but never actually posts anywhere.
+      ALERT_WEBHOOK_URL: "${ALERT_WEBHOOK_URL:-}"
+      ALERT_COOLDOWN_HOURS: "${ALERT_COOLDOWN_HOURS:-6}"
+      ALERT_CHECK_INTERVAL_MINUTES: "${ALERT_CHECK_INTERVAL_MINUTES:-5}"
     volumes:
       # Read-write: the on-demand backup/restore endpoints write and read here,
       # alongside the scheduled `backup` service. :z (shared label) relabels
       # the host dir for SELinux (podman) since both services mount it.
       - ./backups:/app/backups:z
+      - certs:/app/certs
     restart: unless-stopped
 
   frontend:
@@ -138,6 +158,23 @@ services:
       - backend
     ports:
       - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+    environment:
+      # Also the compose port mapping above — passed through here too so
+      # nginx.conf's 80→443 redirect (rendered by docker-entrypoint.sh) knows
+      # the real external port to send a browser back to.
+      HTTPS_PORT: "${HTTPS_PORT:-8443}"
+      # Optional SAN entries for the self-signed default cert
+      # (docker-entrypoint.sh) — only needed if you reach this host by a
+      # name/IP a browser needs the cert to match; the default always covers
+      # localhost/127.0.0.1.
+      CALLOWL_HOST_NAME: "${CALLOWL_HOST_NAME:-}"
+      CALLOWL_HOST_IP: "${CALLOWL_HOST_IP:-}"
+    volumes:
+      # Self-signed cert (or a real one you've mounted over it) — must
+      # persist across container recreates, or every redeploy silently mints
+      # a new self-signed cert (see docker-entrypoint.sh).
+      - certs:/etc/nginx/certs
     restart: unless-stopped
 
   # Self-hosted S3-compatible object storage — the pgBackRest WAL-archiving
@@ -224,6 +261,47 @@ services:
         done
     restart: unless-stopped
 
+  # Off-host copy of both backup artifacts — pg_dump dumps in ./backups AND
+  # the pgBackRest/PITR repo in `minio` — to a separate S3-compatible target
+  # you control (OFFSITE_S3_*). Closes the gap DISASTER_RECOVERY.md's
+  # Scenario B calls out: neither artifact survives losing this host on its
+  # own today, since both live on it. Reuses minio/mc (already the image
+  # `minio-init` uses above) rather than adding a new tool for the same job.
+  # No-ops (idles, re-checking once per interval) until OFFSITE_S3_ENDPOINT
+  # is actually set — unlike everything else in this stack, "copy somewhere
+  # else" can't be made zero-config, so it stays present but inert rather
+  # than failing a fresh `up` with no target configured.
+  offsite-backup:
+    image: minio/mc:latest
+    container_name: callowl-offsite-backup
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-opencdr-minio}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-change_me_minio}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-callowl-pitr}"
+      BACKUP_DIR: /backups
+      OFFSITE_S3_ENDPOINT: "${OFFSITE_S3_ENDPOINT:-}"
+      OFFSITE_S3_ACCESS_KEY: "${OFFSITE_S3_ACCESS_KEY:-}"
+      OFFSITE_S3_SECRET_KEY: "${OFFSITE_S3_SECRET_KEY:-}"
+      OFFSITE_S3_BUCKET: "${OFFSITE_S3_BUCKET:-}"
+      OFFSITE_S3_INSECURE: "${OFFSITE_S3_INSECURE:-false}"
+      OFFSITE_SYNC_INTERVAL_HOURS: "${OFFSITE_SYNC_INTERVAL_HOURS:-24}"
+    volumes:
+      # Read-write: the script writes its own .offsite-last-attempt status
+      # marker here too, same convention as backup/db's own marker files.
+      - ./backups:/backups:z
+      - ./scripts:/scripts:ro,Z
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        while true; do
+          sh /scripts/offsite-sync.sh || echo "[offsite-backup] run failed, will retry next interval"
+          sleep "$$(( OFFSITE_SYNC_INTERVAL_HOURS * 3600 ))"
+        done
+    restart: unless-stopped
+
 volumes:
   # Pinned to their pre-rebrand physical names — these hold live data created
   # under the "open-cdr-platform" project name, before "name: callowl" above
@@ -235,4 +313,6 @@ volumes:
     driver: local
   miniodata:
     name: open-cdr-platform_miniodata
+    driver: local
+  certs:
     driver: local

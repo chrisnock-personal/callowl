@@ -310,6 +310,12 @@ export interface PitrStatus {
   lastBaseBackupAttempt: BackupLastAttempt | null;
 }
 
+export interface OffsiteStatus {
+  configured: boolean;
+  intervalHours: number;
+  lastAttempt: BackupLastAttempt | null;
+}
+
 export interface BackupStatus {
   data: BackupFile[];
   retentionDays: number;
@@ -317,6 +323,29 @@ export interface BackupStatus {
   configured: boolean;
   lastAttempt: BackupLastAttempt | null;
   pitr: PitrStatus;
+  offsite: OffsiteStatus;
+}
+
+export interface PublicStatusComponent {
+  name: string;
+  status: "operational" | "unavailable";
+}
+
+export interface PublicStatus {
+  status: "operational" | "unavailable";
+  timestamp: string;
+  apiVersion: string;
+  components: PublicStatusComponent[];
+}
+
+export interface CertInfo {
+  subject: string;
+  issuer: string;
+  validFrom: string;
+  validTo: string;
+  fingerprintSha256: string;
+  isSelfSigned: boolean;
+  isExpired: boolean;
 }
 
 export type ActorType = "user" | "ingest_key" | "admin_key" | "anonymous";
@@ -594,6 +623,29 @@ export const api = {
     });
     return res.json();
   },
+
+  statusPageConfig: () => request<{ enabled: boolean }>(`/admin/status-page`),
+
+  setStatusPageEnabled: (enabled: boolean) =>
+    request<{ enabled: boolean }>(`/admin/status-page`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  tlsStatus: () => request<CertInfo | null>(`/admin/tls`),
+
+  replaceTls: (cert: string, key: string, apiKey?: string) =>
+    request<CertInfo>(`/admin/tls`, {
+      method: "POST",
+      headers: apiKey ? { "X-API-Key": apiKey } : {},
+      body: JSON.stringify({ cert, key }),
+    }),
+
+  // Unauthenticated on purpose — powers frontend/src/StatusPage.tsx, the
+  // public page rendered for anyone visiting /status. 404s (surfaced as a
+  // thrown ApiError, same as everywhere else) when the admin hasn't turned
+  // it on — see GET /status.
+  publicStatus: () => request<PublicStatus>(`/status`),
 
   login: (username: string, password: string) =>
     request<LoginResult>(`/auth/login`, {

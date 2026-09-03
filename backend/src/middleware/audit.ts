@@ -10,6 +10,7 @@ const BASE = config.apiBasePath;
 const SKIP_EXACT = new Set([
   `${BASE}/health`,
   `${BASE}/metrics`,
+  `${BASE}/status`,
   `${BASE}/openapi.json`,
   `${BASE}/auth/me`,
 ]);

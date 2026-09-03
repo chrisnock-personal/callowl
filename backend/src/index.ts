@@ -20,9 +20,11 @@ import callsRouter from "./routes/calls";
 import statisticsRouter from "./routes/statistics";
 import healthRouter from "./routes/health";
 import metricsRouter from "./routes/metrics";
+import statusRouter from "./routes/status";
 import adminRouter from "./routes/admin";
 import authRouter from "./routes/auth";
 import { listRemoteSources, pruneRemoteSourceRejects, type RemoteSourceMeta } from "./services/remoteSourceService";
+import { checkAndNotify } from "./services/alertService";
 import { pollRemoteSource } from "./services/remotePollService";
 
 const app = express();
@@ -83,6 +85,7 @@ const loginRateLimit = rateLimit({
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.use(`${BASE}/health`, healthRouter);
 app.use(`${BASE}/metrics`, metricsRouter);
+app.use(`${BASE}/status`, statusRouter);
 app.use(`${BASE}/auth/login`, loginRateLimit);
 app.use(`${BASE}/auth`, authRouter);
 app.use(`${BASE}/statistics`, statisticsRouter);
@@ -181,6 +184,23 @@ async function start(): Promise<void> {
     setInterval(() => {
       pollDueRemoteSources().catch((err) => logger.error("Remote source poll cycle failed", { err }));
     }, 60_000);
+
+    // Outbound alerting (services/alertService.ts) — reuses the same status
+    // reads GET /admin/backups already does, so a short interval here is
+    // cheap; the lease just keeps N replicas from each posting the same
+    // webhook independently, not because any single check is expensive.
+    // Must stay comfortably shorter than the tick interval itself, or a
+    // replica's own still-unexpired claim from the *previous* tick silently
+    // suppresses ticks 2/3/4... — caught exactly this running with a 1-minute
+    // ALERT_CHECK_INTERVAL_MINUTES against a naively-fixed 2-minute lease.
+    const ALERT_CHECK_LEASE_MS = Math.min(30_000, config.alerts.checkIntervalMinutes * 60_000 - 5_000);
+    setInterval(() => {
+      (async () => {
+        if (await tryClaimJob("alert_check", ALERT_CHECK_LEASE_MS)) {
+          await checkAndNotify();
+        }
+      })().catch((err) => logger.error("Alert check failed", { err }));
+    }, config.alerts.checkIntervalMinutes * 60_000);
 
     const server = app.listen(config.port, () => {
       logger.info("Open CDR Platform API started", {

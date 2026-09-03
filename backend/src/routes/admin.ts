@@ -13,8 +13,11 @@ import {
   isValidBackupFilename,
   looksLikePgDumpCustomFormat,
   getLastAttempt,
+  getOffsiteLastAttempt,
 } from "../db/backup";
 import { getArchiverStatus, getBaseBackupLastAttempt } from "../db/pitr";
+import { getCurrentCertInfo, stageCertForReload, waitForReload } from "../db/tlsCert";
+import { isStatusPageEnabled, setStatusPageEnabled } from "../services/statusPageService";
 import {
   createUser,
   listUsers,
@@ -69,6 +72,15 @@ router.get(
           archiving: await getArchiverStatus(),
           baseBackupIntervalHours: config.pitr.baseBackupIntervalHours,
           lastBaseBackupAttempt: getBaseBackupLastAttempt(),
+        },
+        // Off-host copy of both artifacts above (see `offsite-backup` compose
+        // service, scripts/offsite-sync.sh). configured reflects whether
+        // OFFSITE_S3_ENDPOINT is set at all, not whether a sync has actually
+        // succeeded yet — same "configured?" shape as `configured` above.
+        offsite: {
+          configured: !!config.offsite.endpoint,
+          intervalHours: config.offsite.intervalHours,
+          lastAttempt: getOffsiteLastAttempt(),
         },
       });
     } catch (err) {
@@ -137,6 +149,93 @@ router.post(
       }
       await restoreFromBuffer(buf);
       res.json({ ok: true, message: "Database restored" });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * GET /admin/tls (platform extension) — current TLS certificate details
+ * (the one `frontend`'s nginx is actually serving). Read-only, so requireAuth
+ * like the backups list above, not requireAdmin.
+ */
+router.get("/tls", requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json(getCurrentCertInfo());
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /admin/tls (platform extension) — replace the TLS certificate nginx
+ * serves. Validates the cert/key pair actually match and the cert isn't
+ * expired, stages them for frontend/cert-watcher.sh to pick up (that
+ * container owns the actual `nginx -t` check, reload, and rollback — this
+ * one has no nginx of its own to test against), then waits up to ~12s for
+ * the outcome so the response reflects what's really being served, not just
+ * "accepted for later." requireAdminKey since a bad cert here can take the
+ * whole dashboard down, same posture as backup restore above.
+ */
+router.post(
+  "/tls",
+  requireAdminKey,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { cert, key } = req.body as { cert?: string; key?: string };
+      if (!cert || !key) throw createError("cert and key are both required", 400);
+
+      stageCertForReload(cert, key);
+      const outcome = await waitForReload();
+
+      if (outcome.status === "timeout") {
+        throw createError(
+          "Certificate staged, but the frontend container didn't confirm a reload within 12s — " +
+            "check `podman logs callowl-frontend` for cert-watcher.sh output",
+          502
+        );
+      }
+      if (outcome.status === "failed") {
+        throw createError(
+          `nginx rejected the new certificate — reverted to the previous one. Detail: ${
+            outcome.reason ?? "see \`podman logs callowl-frontend\`"
+          }`,
+          400
+        );
+      }
+
+      res.json(getCurrentCertInfo());
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * GET /admin/status-page (platform extension) — whether the public,
+ * unauthenticated GET /status is currently turned on. requireAuth like the
+ * other read-only admin status endpoints, not requireAdmin — any logged-in
+ * user can see it, only an admin can change it.
+ */
+router.get("/status-page", requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json({ enabled: await isStatusPageEnabled() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /admin/status-page (platform extension) — toggle GET /status on/off. */
+router.post(
+  "/status-page",
+  requireAuth,
+  requireAdmin,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
+      await setStatusPageEnabled(enabled);
+      res.json({ enabled });
     } catch (err) {
       next(err);
     }

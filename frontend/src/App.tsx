@@ -19,6 +19,7 @@ import {
   IvrTimeTrendPoint,
   IvrBreakdown,
   BackupStatus,
+  CertInfo,
   AuthUser,
   MfaEnrollment,
   ManagedUser,
@@ -34,7 +35,7 @@ import {
 // ─── Palette: "signal & routing" ──────────────────────────────────────────────
 // Cool paper, ink text, a signal-blue primary, and call-state colours drawn from
 // switchboard signalling rather than a generic dashboard green.
-const C = {
+export const C = {
   bg: "#EDF0F4",
   surface: "#FFFFFF",
   surfaceAlt: "#F5F7FA",
@@ -61,8 +62,8 @@ const C = {
   featherLight: "#EAD9BE",
 };
 
-const MONO = "ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace";
-const SANS =
+export const MONO = "ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace";
+export const SANS =
   "system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1268,6 +1269,90 @@ function HeaderMenu({
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [showAuditLog, setShowAuditLog] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const [tlsInfo, setTlsInfo] = useState<CertInfo | null>(null);
+  const [loadingTls, setLoadingTls] = useState(false);
+  const [showTlsUpload, setShowTlsUpload] = useState(false);
+  const tlsCertInputRef = React.useRef<HTMLInputElement>(null);
+  const tlsKeyInputRef = React.useRef<HTMLInputElement>(null);
+
+  const refreshTls = () => {
+    setLoadingTls(true);
+    api
+      .tlsStatus()
+      .then(setTlsInfo)
+      .catch(() => setTlsInfo(null))
+      .finally(() => setLoadingTls(false));
+  };
+
+  useEffect(() => {
+    if (!open || tlsInfo || loadingTls) return;
+    refreshTls();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const readFileAsText = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(file);
+    });
+
+  const handleReplaceTls = async () => {
+    const certFile = tlsCertInputRef.current?.files?.[0];
+    const keyFile = tlsKeyInputRef.current?.files?.[0];
+    if (!certFile || !keyFile) {
+      setMsg({ ok: false, text: "Choose both a certificate and a key file" });
+      return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      const [cert, key] = await Promise.all([readFileAsText(certFile), readFileAsText(keyFile)]);
+      await api.replaceTls(cert, key, adminKey || undefined);
+      setMsg({ ok: true, text: "Certificate replaced and nginx reloaded" });
+      setShowTlsUpload(false);
+      if (tlsCertInputRef.current) tlsCertInputRef.current.value = "";
+      if (tlsKeyInputRef.current) tlsKeyInputRef.current.value = "";
+      refreshTls();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Certificate replace failed" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const [statusPageEnabled, setStatusPageEnabledState] = useState<boolean | null>(null);
+  const [loadingStatusPage, setLoadingStatusPage] = useState(false);
+  const [statusPageBusy, setStatusPageBusy] = useState(false);
+
+  const refreshStatusPage = () => {
+    setLoadingStatusPage(true);
+    api
+      .statusPageConfig()
+      .then((r) => setStatusPageEnabledState(r.enabled))
+      .catch(() => setStatusPageEnabledState(null))
+      .finally(() => setLoadingStatusPage(false));
+  };
+
+  useEffect(() => {
+    if (!open || statusPageEnabled !== null || loadingStatusPage) return;
+    refreshStatusPage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const handleToggleStatusPage = async () => {
+    setStatusPageBusy(true);
+    setMsg(null);
+    try {
+      const result = await api.setStatusPageEnabled(!statusPageEnabled);
+      setStatusPageEnabledState(result.enabled);
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message ?? "Couldn’t update status page" });
+    } finally {
+      setStatusPageBusy(false);
+    }
+  };
 
   const refreshBackups = () => {
     setLoadingBackups(true);
@@ -1365,6 +1450,17 @@ function HeaderMenu({
         2 * backups.pitr.baseBackupIntervalHours * 3_600_000);
   const pitrIsStale = archivingIsStale || baseBackupIsStale;
 
+  // Off-host copy (offsite-backup compose service, scripts/offsite-sync.sh) —
+  // same overdue-or-failed staleness check as the pg_dump warning above.
+  const offsiteLastAttempt = backups?.offsite.lastAttempt ?? null;
+  const offsiteIsStale =
+    !!backups &&
+    backups.offsite.configured &&
+    !!offsiteLastAttempt &&
+    (offsiteLastAttempt.status === "failed" ||
+      Date.now() - new Date(offsiteLastAttempt.at).getTime() >
+        2 * backups.offsite.intervalHours * 3_600_000);
+
   return (
     <div style={{ position: "relative" }}>
       <button
@@ -1449,6 +1545,192 @@ function HeaderMenu({
             <SecuritySection authUser={authUser} onAuthUserChange={onAuthUserChange} />
             <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
             <ApiKeysSection />
+            <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
+            <div style={{ padding: "8px 10px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: 6,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 10.5,
+                    letterSpacing: 0.5,
+                    textTransform: "uppercase",
+                    color: C.textMuted,
+                    fontWeight: 700,
+                  }}
+                >
+                  TLS certificate
+                </div>
+                {authUser.role === "admin" && (
+                  <button
+                    onClick={() => setShowTlsUpload((v) => !v)}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      color: C.accentDeep,
+                      cursor: "pointer",
+                      fontSize: 12,
+                      fontWeight: 650,
+                      padding: 0,
+                    }}
+                  >
+                    {showTlsUpload ? "Cancel" : "Replace…"}
+                  </button>
+                )}
+              </div>
+
+              {loadingTls ? (
+                <div style={{ fontSize: 12.5, color: C.textMuted }}>Loading…</div>
+              ) : !tlsInfo ? (
+                <div style={{ fontSize: 12.5, color: C.textMuted }}>Unavailable</div>
+              ) : (
+                <>
+                  {(() => {
+                    const expiresInDays = Math.floor(
+                      (new Date(tlsInfo.validTo).getTime() - Date.now()) / 86_400_000
+                    );
+                    const warn = tlsInfo.isExpired || expiresInDays < 30;
+                    return (
+                      <div style={{ fontSize: 13, fontWeight: 600, color: warn ? C.rose : C.ink }}>
+                        {warn && "⚠ "}
+                        {tlsInfo.isSelfSigned ? "Self-signed" : "CA-issued"} ·{" "}
+                        {tlsInfo.isExpired
+                          ? `expired ${new Date(tlsInfo.validTo).toLocaleDateString()}`
+                          : `expires ${new Date(tlsInfo.validTo).toLocaleDateString()} (${expiresInDays}d)`}
+                      </div>
+                    );
+                  })()}
+                  <div
+                    style={{
+                      fontSize: 11.5,
+                      color: C.textMuted,
+                      fontFamily: MONO,
+                      marginTop: 2,
+                      wordBreak: "break-all",
+                    }}
+                  >
+                    {tlsInfo.subject}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: C.textMuted,
+                      fontFamily: MONO,
+                      marginTop: 2,
+                      wordBreak: "break-all",
+                    }}
+                  >
+                    {tlsInfo.fingerprintSha256}
+                  </div>
+                </>
+              )}
+
+              {showTlsUpload && (
+                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div style={{ fontSize: 11, color: C.textMuted }}>
+                    Certificate (server cert + intermediates, PEM):
+                  </div>
+                  <input
+                    ref={tlsCertInputRef}
+                    type="file"
+                    accept=".crt,.pem,.cer"
+                    style={{ fontSize: 11.5 }}
+                  />
+                  <div style={{ fontSize: 11, color: C.textMuted }}>Private key (PEM):</div>
+                  <input
+                    ref={tlsKeyInputRef}
+                    type="file"
+                    accept=".key,.pem"
+                    style={{ fontSize: 11.5 }}
+                  />
+                  <button
+                    onClick={handleReplaceTls}
+                    disabled={busy}
+                    style={{
+                      marginTop: 2,
+                      padding: "7px 10px",
+                      borderRadius: 6,
+                      border: "none",
+                      background: busy ? C.borderStrong : C.ink,
+                      color: "#fff",
+                      fontSize: 12,
+                      fontWeight: 650,
+                      cursor: busy ? "default" : "pointer",
+                    }}
+                  >
+                    Upload &amp; reload
+                  </button>
+                </div>
+              )}
+            </div>
+            <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
+            <div style={{ padding: "8px 10px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: 4,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 10.5,
+                    letterSpacing: 0.5,
+                    textTransform: "uppercase",
+                    color: C.textMuted,
+                    fontWeight: 700,
+                  }}
+                >
+                  Status page
+                </div>
+                {authUser.role === "admin" &&
+                  (loadingStatusPage ? null : (
+                    <button
+                      onClick={handleToggleStatusPage}
+                      disabled={statusPageBusy}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        color: C.accentDeep,
+                        cursor: statusPageBusy ? "default" : "pointer",
+                        fontSize: 12,
+                        fontWeight: 650,
+                        padding: 0,
+                      }}
+                    >
+                      {statusPageEnabled ? "Disable" : "Enable"}
+                    </button>
+                  ))}
+              </div>
+              {loadingStatusPage ? (
+                <div style={{ fontSize: 12.5, color: C.textMuted }}>Loading…</div>
+              ) : (
+                <div style={{ fontSize: 12.5, color: C.textMuted }}>
+                  {statusPageEnabled ? (
+                    <>
+                      Public at{" "}
+                      <a
+                        href="/status"
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: C.accentDeep, fontWeight: 650 }}
+                      >
+                        /status
+                      </a>{" "}
+                      — no login required.
+                    </>
+                  ) : (
+                    "Off — nothing is publicly reachable."
+                  )}
+                </div>
+              )}
+            </div>
             <div style={{ borderTop: `1px solid ${C.border}`, margin: "4px 0" }} />
             <a
               href="/api/cdr/v1/docs"
@@ -1622,6 +1904,55 @@ function HeaderMenu({
                       : "no base backup yet"}{" "}
                     · every {backups.pitr.baseBackupIntervalHours}h
                   </div>
+
+                  <div style={{ borderTop: `1px solid ${C.border}`, margin: "10px 0" }} />
+                  <div
+                    style={{
+                      fontSize: 10.5,
+                      letterSpacing: 0.5,
+                      textTransform: "uppercase",
+                      color: C.textMuted,
+                      fontWeight: 700,
+                      marginBottom: 6,
+                    }}
+                  >
+                    Off-host copy
+                  </div>
+                  {!backups.offsite.configured ? (
+                    <div style={{ fontSize: 12.5, color: C.textMuted }}>
+                      Not configured — see README for `OFFSITE_S3_ENDPOINT`.
+                    </div>
+                  ) : (
+                    <>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color: offsiteIsStale ? C.rose : C.ink,
+                        }}
+                      >
+                        {offsiteIsStale && "⚠ "}
+                        {offsiteLastAttempt
+                          ? `Last sync: ${fmtRelative(offsiteLastAttempt.at)}`
+                          : "No sync yet"}
+                      </div>
+                      {offsiteLastAttempt?.status === "failed" && (
+                        <div style={{ fontSize: 11.5, color: C.rose, marginTop: 2 }}>
+                          Last sync attempt failed — check `podman logs callowl-offsite-backup`.
+                        </div>
+                      )}
+                      <div
+                        style={{
+                          fontSize: 11.5,
+                          color: C.textMuted,
+                          fontFamily: MONO,
+                          marginTop: 2,
+                        }}
+                      >
+                        every {backups.offsite.intervalHours}h
+                      </div>
+                    </>
+                  )}
 
                   <input
                     type="password"

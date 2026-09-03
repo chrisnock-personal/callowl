@@ -54,16 +54,45 @@ const envSchema = z.object({
   // half of PITR health, the same way BACKUP_INTERVAL_HOURS does for pg_dump.
   PITR_BACKUP_INTERVAL_HOURS: z.string().default("24"),
 
+  // Off-host copy of both backup artifacts (pg_dump + PITR repo) to a
+  // separate S3-compatible target — see the `offsite-backup` compose service
+  // and scripts/offsite-sync.sh, which actually own the sync credentials
+  // (OFFSITE_S3_ACCESS_KEY/SECRET_KEY/BUCKET). The backend only needs the
+  // endpoint (to know whether it's configured at all) and the interval (to
+  // compute staleness for the dashboard), the same "configured?" + interval
+  // shape BACKUPS_DIR/BACKUP_INTERVAL_HOURS already have.
+  OFFSITE_S3_ENDPOINT: z.string().optional(),
+  OFFSITE_SYNC_INTERVAL_HOURS: z.string().default("24"),
+
+  // Shared with the `frontend` container's /etc/nginx/certs (same `certs`
+  // volume, different mount point — see db/tlsCert.ts and
+  // frontend/cert-watcher.sh) so GET/POST /admin/tls can read/replace the
+  // TLS certificate nginx serves.
+  TLS_CERTS_DIR: z.string().optional(),
+
+  // Outbound alerting (services/alertService.ts) — posts JSON (with a `text`
+  // field Slack/Discord incoming webhooks render directly, so one URL works
+  // for either without Slack-specific code) to this URL on a health-signal
+  // transition, or after ALERT_COOLDOWN_HOURS if a condition stays unhealthy.
+  // Left unset, the scheduled check still runs (cheap — reuses the same
+  // status reads GET /admin/backups already does) but never actually posts.
+  ALERT_WEBHOOK_URL: z.string().optional(),
+  ALERT_COOLDOWN_HOURS: z.string().default("6"),
+  ALERT_CHECK_INTERVAL_MINUTES: z.string().default("5"),
+
   // Dashboard/API user accounts. The bootstrap admin is created on first boot
   // if the users table is empty — see db/seedAdmin.ts. Login is required for
   // every user beyond that; there's no "open" mode once this exists.
   BOOTSTRAP_ADMIN_USERNAME: z.string().default("admin"),
   BOOTSTRAP_ADMIN_PASSWORD: z.string().optional(),
 
-  // Session cookies default to non-Secure since the stack runs over plain
-  // HTTP by default (no TLS — see README Status). Set true only once this is
-  // actually served over HTTPS (e.g. behind a TLS-terminating reverse proxy),
-  // otherwise browsers silently refuse to send the cookie and login breaks.
+  // Code-level default stays non-Secure so the bare `npm run dev` workflow
+  // (genuinely plain HTTP, no committed backend/.env to override this) never
+  // silently breaks login. docker-compose.yml/.env.example default this to
+  // "true" instead, since the frontend nginx container terminates HTTPS by
+  // default there (self-signed out of the box — see
+  // frontend/docker-entrypoint.sh) and plain HTTP redirects to it rather
+  // than serving the app directly.
   COOKIE_SECURE: z.enum(["true", "false"]).default("false"),
 
   // How long audit_log entries are kept — pruned once on boot and daily
@@ -159,6 +188,21 @@ export const config = {
 
   pitr: {
     baseBackupIntervalHours: parseInt(env.PITR_BACKUP_INTERVAL_HOURS, 10),
+  },
+
+  offsite: {
+    endpoint: env.OFFSITE_S3_ENDPOINT,
+    intervalHours: parseInt(env.OFFSITE_SYNC_INTERVAL_HOURS, 10),
+  },
+
+  tls: {
+    certsDir: env.TLS_CERTS_DIR,
+  },
+
+  alerts: {
+    webhookUrl: env.ALERT_WEBHOOK_URL,
+    cooldownHours: parseInt(env.ALERT_COOLDOWN_HOURS, 10),
+    checkIntervalMinutes: parseInt(env.ALERT_CHECK_INTERVAL_MINUTES, 10),
   },
 
   auth: {

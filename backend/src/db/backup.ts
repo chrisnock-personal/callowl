@@ -137,3 +137,13 @@ export function getLastAttempt(): LastAttempt | null {
   if (!dir) return null;
   return readLastAttempt(path.join(dir, ".last-attempt"));
 }
+
+// Written by scripts/offsite-sync.sh (the `offsite-backup` compose service)
+// on every run, success or failure — same marker-file convention as
+// .last-attempt above, for the off-host copy of both pg_dump and the PITR
+// repo. Absent for a deployment that's never had OFFSITE_S3_ENDPOINT set.
+export function getOffsiteLastAttempt(): LastAttempt | null {
+  const dir = config.backups.dir;
+  if (!dir) return null;
+  return readLastAttempt(path.join(dir, ".offsite-last-attempt"));
+}

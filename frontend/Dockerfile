@@ -8,7 +8,11 @@ RUN npm run build
 
 # ── Serve stage ───────────────────────────────────────────────────────────────
 FROM nginx:1.27-alpine AS serve
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+RUN apk add --no-cache openssl
+COPY nginx.conf /etc/nginx/nginx.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+COPY docker-entrypoint.sh cert-watcher.sh /
+RUN chmod +x /docker-entrypoint.sh /cert-watcher.sh
+EXPOSE 80 443
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]

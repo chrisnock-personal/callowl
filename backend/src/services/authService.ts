@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { query, queryOne } from "../db/pool";
+import { query, queryOne, withTransaction } from "../db/pool";
 import { config } from "../config";
 
 export type UserRole = "admin" | "viewer";
@@ -120,10 +120,25 @@ export async function updateUser(id: number, patch: UserPatch): Promise<User | n
 
   sets.push("updated_at = now()");
   params.push(id);
-  const row = await queryOne<UserRow>(
-    `UPDATE users SET ${sets.join(", ")} WHERE id = $${params.length} RETURNING ${USER_COLUMNS}`,
-    params
-  );
+
+  // A password change invalidates every existing session for this account —
+  // otherwise a session established under the old password stays trusted for
+  // up to SESSION_TTL_MS more, which defeats the point of changing it (e.g.
+  // after a suspected compromise). Full account deletion already gets this
+  // for free via sessions' ON DELETE CASCADE; this is the other gap — a
+  // password change alone left sessions untouched. Transactional so a
+  // mid-failure never leaves the password changed with old sessions still
+  // silently valid.
+  const row = await withTransaction(async (client) => {
+    const result = await client.query<UserRow>(
+      `UPDATE users SET ${sets.join(", ")} WHERE id = $${params.length} RETURNING ${USER_COLUMNS}`,
+      params
+    );
+    if (patch.password !== undefined) {
+      await client.query("DELETE FROM sessions WHERE user_id = $1", [id]);
+    }
+    return result.rows[0] as UserRow | undefined;
+  });
   return row ? toUser(row) : null;
 }
 
