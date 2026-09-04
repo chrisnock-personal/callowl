@@ -375,6 +375,84 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+// Shown only while the install is genuinely empty (App() checks live data,
+// not a stored flag — see the comment by onboardingEmpty) and the user
+// hasn't dismissed it. Two independent paths to real data, since push
+// (POST /calls/ingest) and pull (a configured remote source) are equally
+// valid primary workflows here — neither is "the right one."
+function OnboardingChecklist({
+  onIngest,
+  onDismiss,
+}: {
+  onIngest: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      style={{
+        marginTop: 16,
+        padding: "14px 16px",
+        borderRadius: 10,
+        background: C.accentSoft,
+        border: `1px solid ${C.accent}33`,
+        position: "relative",
+      }}
+    >
+      <button
+        onClick={onDismiss}
+        title="Dismiss"
+        aria-label="Dismiss"
+        style={{
+          position: "absolute",
+          top: 10,
+          right: 10,
+          border: "none",
+          background: "transparent",
+          color: C.textMuted,
+          cursor: "pointer",
+          fontSize: 15,
+          lineHeight: 1,
+          padding: 4,
+        }}
+      >
+        ×
+      </button>
+      <div style={{ fontSize: 14, fontWeight: 700, color: C.ink, marginBottom: 8 }}>
+        Get started
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: C.textMid }}>
+        <div>
+          <strong>Ingest a record</strong> —{" "}
+          <button
+            onClick={onIngest}
+            style={{
+              border: "none",
+              background: "transparent",
+              color: C.accentDeep,
+              fontWeight: 650,
+              cursor: "pointer",
+              padding: 0,
+              fontSize: 13,
+              textDecoration: "underline",
+            }}
+          >
+            paste one in
+          </button>{" "}
+          or <code style={{ fontFamily: MONO }}>POST /calls/ingest</code>.
+        </div>
+        <div>
+          <strong>Or pull from another source</strong> — configure a remote source under the{" "}
+          <strong>⋯</strong> menu to poll for CDRs automatically.
+        </div>
+        <div>
+          <strong>Then view it</strong> — click any row once you have data to see the full call
+          timeline and metadata.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   // Login is always required — see GET /auth/me on mount below. authChecked
@@ -448,6 +526,46 @@ export default function App() {
   const [drillError, setDrillError] = useState<string | null>(null);
   const [showIngest, setShowIngest] = useState(false);
   const [exporting, setExporting] = useState(false);
+
+  // Genuinely empty (zero records ever, not just none in the current filter
+  // window) rather than a stored "has onboarded" flag — a flag either stays
+  // stuck showing this forever once dismissed-but-still-empty, or stops
+  // showing forever once set even if someone later wipes the database.
+  // pageSize: 1 with a wide, fixed time range (independent of whatever the
+  // dashboard's own filters currently are) — this has to answer "is the
+  // whole install empty," not "is the current view empty."
+  const [onboardingEmpty, setOnboardingEmpty] = useState<boolean | null>(null);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(() => {
+    try {
+      return localStorage.getItem("opencdr.onboarding.dismissed") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    if (!authUser) return;
+    api
+      .listCalls({
+        startTime: "2000-01-01T00:00:00.000Z",
+        endTime: new Date(Date.now() + 86_400_000).toISOString(),
+        page: 1,
+        pageSize: 1,
+      })
+      .then((page) => setOnboardingEmpty(page.pagination.totalRecords === 0))
+      .catch(() => setOnboardingEmpty(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser?.username]);
+
+  const dismissOnboarding = () => {
+    setOnboardingDismissed(true);
+    try {
+      localStorage.setItem("opencdr.onboarding.dismissed", "true");
+    } catch {
+      // Best-effort — a private-browsing tab that throws here just means the
+      // banner reappears next reload, not a broken feature.
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -788,6 +906,9 @@ export default function App() {
       />
 
       <main style={{ maxWidth: 1280, margin: "0 auto", padding: "0 20px 64px" }}>
+        {onboardingEmpty && !onboardingDismissed && (
+          <OnboardingChecklist onIngest={() => setShowIngest(true)} onDismiss={dismissOnboarding} />
+        )}
         <FilterBar
           startTime={startTime}
           endTime={endTime}
