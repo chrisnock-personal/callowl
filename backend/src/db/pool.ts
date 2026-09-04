@@ -54,6 +54,33 @@ export async function withTransaction<T>(
   }
 }
 
+/**
+ * Builds a parameterized `SET col = $n, ...` clause plus its params array
+ * from a { column: value } map, skipping any entry whose value is
+ * `undefined` (an omitted patch field, not a real "set to null") — the
+ * shared shape behind authService.ts's updateUser, remoteSourceService.ts's
+ * updateRemoteSource and recordPollResult, which each used to hand-roll this
+ * same push-to-sets/push-to-params dance separately. Doesn't add
+ * `updated_at = now()` or the trailing `WHERE` param (an id) — those aren't
+ * part of every caller's shape (recordPollResult also always-sets
+ * `last_polled_at = now()`), so callers still append what they need after.
+ * Returns `{ sets: [] }` (no params) when every value is undefined, same as
+ * each caller's own pre-existing "nothing to update" short-circuit expects.
+ */
+export function buildSetClause(fields: Record<string, unknown>): {
+  sets: string[];
+  params: unknown[];
+} {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  for (const [column, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    params.push(value);
+    sets.push(`${column} = $${params.length}`);
+  }
+  return { sets, params };
+}
+
 export async function testConnection(): Promise<void> {
   const client = await getPool().connect();
   try {

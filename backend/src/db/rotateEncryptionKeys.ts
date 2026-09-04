@@ -18,22 +18,33 @@ import {
  * on both sides — a no-op re-encryption).
  */
 
+// Per-row updates run concurrently (Promise.all) rather than one at a time —
+// each row is fully independent (its own id, no shared state), and the pool
+// itself caps real concurrency, so this is just letting rotation of N rows
+// take roughly one round trip's worth of wall time instead of N. Matters
+// here specifically: SECRETS_ROTATION.md frames running this promptly after
+// a suspected key leak as the point of the exercise, so N sequential round
+// trips working against that urgency on a deployment with hundreds of rows
+// isn't just an efficiency nicety.
+
 async function rotateRemoteSourceSecrets(): Promise<number> {
   const rows = await query<{ id: string; auth_type: string; auth_config: Record<string, unknown> }>(
     "SELECT id, auth_type, auth_config FROM remote_sources"
   );
-  for (const row of rows) {
-    // toAuth: decrypt (current key, falling back to previous). buildAuthConfig:
-    // re-encrypt (current key only). The round trip through the same two
-    // functions the app already uses for create/update *is* the rotation —
-    // no separate copy of the auth-shape-branching logic.
-    const auth = toAuth(row.auth_type, row.auth_config);
-    const reencrypted = buildAuthConfig(auth);
-    await query("UPDATE remote_sources SET auth_config = $1 WHERE id = $2", [
-      JSON.stringify(reencrypted),
-      row.id,
-    ]);
-  }
+  await Promise.all(
+    rows.map((row) => {
+      // toAuth: decrypt (current key, falling back to previous). buildAuthConfig:
+      // re-encrypt (current key only). The round trip through the same two
+      // functions the app already uses for create/update *is* the rotation —
+      // no separate copy of the auth-shape-branching logic.
+      const auth = toAuth(row.auth_type, row.auth_config);
+      const reencrypted = buildAuthConfig(auth);
+      return query("UPDATE remote_sources SET auth_config = $1 WHERE id = $2", [
+        JSON.stringify(reencrypted),
+        row.id,
+      ]);
+    })
+  );
   return rows.length;
 }
 
@@ -43,17 +54,23 @@ async function rotateMfaSecrets(): Promise<number> {
   );
   const key = mfaEncryptionKey();
   const previousKey = mfaEncryptionKeyPrevious();
-  for (const row of rows) {
-    const secret = decryptSecretWithFallback(row.mfa_secret_encrypted, key, previousKey);
-    const reencrypted = encryptSecret(secret, key);
-    await query("UPDATE users SET mfa_secret_encrypted = $1 WHERE id = $2", [reencrypted, row.id]);
-  }
+  await Promise.all(
+    rows.map((row) => {
+      const secret = decryptSecretWithFallback(row.mfa_secret_encrypted, key, previousKey);
+      const reencrypted = encryptSecret(secret, key);
+      return query("UPDATE users SET mfa_secret_encrypted = $1 WHERE id = $2", [reencrypted, row.id]);
+    })
+  );
   return rows.length;
 }
 
 export async function rotateEncryptionKeys(): Promise<{ remoteSources: number; mfaSecrets: number }> {
-  const remoteSources = await rotateRemoteSourceSecrets();
-  const mfaSecrets = await rotateMfaSecrets();
+  // Independent tables, no shared state between them — no reason to wait
+  // for one before starting the other.
+  const [remoteSources, mfaSecrets] = await Promise.all([
+    rotateRemoteSourceSecrets(),
+    rotateMfaSecrets(),
+  ]);
   logger.info("Encryption key rotation complete", { remoteSources, mfaSecrets });
   return { remoteSources, mfaSecrets };
 }

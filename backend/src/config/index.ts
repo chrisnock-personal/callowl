@@ -125,6 +125,13 @@ const envSchema = z.object({
   // 15-minute window for consistency.
   LOGIN_LOCKOUT_THRESHOLD: z.string().default("5"),
   LOGIN_LOCKOUT_DURATION_MINUTES: z.string().default("15"),
+  // How long a login_lockouts row lingers after its last attempt before
+  // being pruned (see index.ts) — every distinct username ever submitted to
+  // POST /auth/login gets a row here by design (real or fake, to avoid a
+  // username-existence oracle — see the lockout comment below), so unlike
+  // audit_log this has no record-keeping value past the lockout window
+  // itself; short by default on purpose.
+  LOGIN_LOCKOUT_ROW_RETENTION_DAYS: z.string().default("7"),
 
   // Reversible-encryption key for TOTP MFA secrets (services/mfaService.ts,
   // via cryptoService.ts) — has to be read back to verify codes, unlike a
@@ -224,6 +231,7 @@ export const config = {
   loginLockout: {
     threshold: parseInt(env.LOGIN_LOCKOUT_THRESHOLD, 10),
     durationMinutes: parseInt(env.LOGIN_LOCKOUT_DURATION_MINUTES, 10),
+    rowRetentionDays: parseInt(env.LOGIN_LOCKOUT_ROW_RETENTION_DAYS, 10),
   },
 
   mfa: {

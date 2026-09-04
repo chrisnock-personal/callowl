@@ -1,4 +1,4 @@
-import { query, queryOne } from "../db/pool";
+import { query, queryOne, buildSetClause } from "../db/pool";
 import {
   encryptSecret,
   decryptSecretWithFallback,
@@ -59,6 +59,20 @@ const REMOTE_SOURCE_COLUMNS = `
   rs.poll_interval_minutes, rs.backfill_from, rs.watermark, rs.last_polled_at,
   rs.last_poll_status, rs.last_poll_error, rs.created_at, rs.updated_at,
   (SELECT COUNT(*)::int FROM remote_source_rejects r WHERE r.remote_source_id = rs.id) AS reject_count
+`;
+
+// Same shape, minus the reject_count subquery — RemoteSourceInternal (what
+// getRemoteSourceForPolling below returns) is consumed only by
+// remotePollService.ts, which never reads rejectCount, so every poll tick
+// for every due source was otherwise paying for a COUNT(*) scan over
+// remote_source_rejects for nothing. 0 AS reject_count matches the same
+// "not meaningful here" convention createRemoteSource's own RETURNING
+// clause already uses right after insert, before any rejects could exist.
+const REMOTE_SOURCE_COLUMNS_FOR_POLLING = `
+  rs.id::text, rs.name, rs.base_url, rs.auth_type, rs.auth_config, rs.enabled,
+  rs.poll_interval_minutes, rs.backfill_from, rs.watermark, rs.last_polled_at,
+  rs.last_poll_status, rs.last_poll_error, rs.created_at, rs.updated_at,
+  0 AS reject_count
 `;
 
 // pg auto-parses TIMESTAMPTZ columns into JS Date objects, not strings —
@@ -230,31 +244,14 @@ export interface RemoteSourcePatch {
 }
 
 export async function updateRemoteSource(id: number, patch: RemoteSourcePatch): Promise<RemoteSourceMeta | null> {
-  const sets: string[] = [];
-  const params: unknown[] = [];
-
-  if (patch.name !== undefined) {
-    params.push(patch.name);
-    sets.push(`name = $${params.length}`);
-  }
-  if (patch.baseUrl !== undefined) {
-    params.push(patch.baseUrl);
-    sets.push(`base_url = $${params.length}`);
-  }
-  if (patch.enabled !== undefined) {
-    params.push(patch.enabled);
-    sets.push(`enabled = $${params.length}`);
-  }
-  if (patch.pollIntervalMinutes !== undefined) {
-    params.push(patch.pollIntervalMinutes);
-    sets.push(`poll_interval_minutes = $${params.length}`);
-  }
-  if (patch.auth !== undefined) {
-    params.push(patch.auth.authType);
-    sets.push(`auth_type = $${params.length}`);
-    params.push(JSON.stringify(buildAuthConfig(patch.auth)));
-    sets.push(`auth_config = $${params.length}`);
-  }
+  const { sets, params } = buildSetClause({
+    name: patch.name,
+    base_url: patch.baseUrl,
+    enabled: patch.enabled,
+    poll_interval_minutes: patch.pollIntervalMinutes,
+    auth_type: patch.auth?.authType,
+    auth_config: patch.auth !== undefined ? JSON.stringify(buildAuthConfig(patch.auth)) : undefined,
+  });
   if (sets.length === 0) return getRemoteSourceMeta(id);
 
   sets.push("updated_at = now()");
@@ -282,7 +279,7 @@ export interface RemoteSourceInternal extends RemoteSourceMeta {
 
 export async function getRemoteSourceForPolling(id: number): Promise<RemoteSourceInternal | null> {
   const row = await queryOne<RemoteSourceRow>(
-    `SELECT ${REMOTE_SOURCE_COLUMNS} FROM remote_sources rs WHERE rs.id = $1`,
+    `SELECT ${REMOTE_SOURCE_COLUMNS_FOR_POLLING} FROM remote_sources rs WHERE rs.id = $1`,
     [id]
   );
   if (!row) return null;
@@ -299,13 +296,14 @@ export interface PollResultUpdate {
 }
 
 export async function recordPollResult(id: number, result: PollResultUpdate): Promise<void> {
-  const params: unknown[] = [id, result.status, result.error ?? null];
-  const sets = ["last_polled_at = now()", "last_poll_status = $2", "last_poll_error = $3", "updated_at = now()"];
-  if (result.watermark !== undefined) {
-    params.push(result.watermark);
-    sets.push(`watermark = $${params.length}`);
-  }
-  await query(`UPDATE remote_sources SET ${sets.join(", ")} WHERE id = $1`, params);
+  const { sets, params } = buildSetClause({
+    last_poll_status: result.status,
+    last_poll_error: result.error ?? null,
+    watermark: result.watermark,
+  });
+  sets.push("last_polled_at = now()", "updated_at = now()");
+  params.push(id);
+  await query(`UPDATE remote_sources SET ${sets.join(", ")} WHERE id = $${params.length}`, params);
 }
 
 // ─── Rejects ────────────────────────────────────────────────────────────────

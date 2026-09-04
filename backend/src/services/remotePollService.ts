@@ -122,11 +122,7 @@ async function fetchPage(
  * same window on failure is harmless).
  */
 async function pollRemoteSourceImpl(sourceId: number): Promise<PollSummary> {
-  const source = await getRemoteSourceForPolling(sourceId);
-  if (!source) throw new Error(`Remote source ${sourceId} not found`);
-
   const pollStartTime = new Date();
-  const startTime = source.watermark ?? source.backfillFrom;
   const endTime = pollStartTime.toISOString();
 
   let acceptedCount = 0;
@@ -135,6 +131,16 @@ async function pollRemoteSourceImpl(sourceId: number): Promise<PollSummary> {
   let watermark = endTime;
 
   try {
+    // Inside the try deliberately — getRemoteSourceForPolling can throw
+    // synchronously (missing source, or a decrypt failure in toAuth() during
+    // a botched key rotation), and that failure needs recordPollResult()
+    // just as much as a fetch/validation failure does, or the dashboard's
+    // poll status goes stale/null forever while every cycle keeps failing
+    // silently behind it.
+    const source = await getRemoteSourceForPolling(sourceId);
+    if (!source) throw new Error(`Remote source ${sourceId} not found`);
+    const startTime = source.watermark ?? source.backfillFrom;
+
     if (source.auth.authType === "custom") {
       const result = await runCustomScript({ ...source, auth: source.auth });
       pagesRead = 1;

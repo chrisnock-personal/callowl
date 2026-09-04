@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { query, queryOne, withTransaction } from "../db/pool";
+import { query, queryOne, withTransaction, buildSetClause } from "../db/pool";
 import { config } from "../config";
 
 export type UserRole = "admin" | "viewer";
@@ -96,26 +96,12 @@ export interface UserPatch {
 }
 
 export async function updateUser(id: number, patch: UserPatch): Promise<User | null> {
-  const sets: string[] = [];
-  const params: unknown[] = [];
-
-  if (patch.role !== undefined) {
-    params.push(patch.role);
-    sets.push(`role = $${params.length}`);
-  }
-  if (patch.allowedGroups !== undefined) {
-    params.push(patch.allowedGroups);
-    sets.push(`allowed_groups = $${params.length}`);
-  }
-  if (patch.allowedSourcePlatformIds !== undefined) {
-    params.push(patch.allowedSourcePlatformIds);
-    sets.push(`allowed_source_platform_ids = $${params.length}`);
-  }
-  if (patch.password !== undefined) {
-    const hash = await bcrypt.hash(patch.password, BCRYPT_ROUNDS);
-    params.push(hash);
-    sets.push(`password_hash = $${params.length}`);
-  }
+  const { sets, params } = buildSetClause({
+    role: patch.role,
+    allowed_groups: patch.allowedGroups,
+    allowed_source_platform_ids: patch.allowedSourcePlatformIds,
+    password_hash: patch.password !== undefined ? await bcrypt.hash(patch.password, BCRYPT_ROUNDS) : undefined,
+  });
   if (sets.length === 0) return getUserById(id);
 
   sets.push("updated_at = now()");
@@ -210,6 +196,22 @@ export async function recordSuccessfulLogin(username: string): Promise<void> {
   await query(`DELETE FROM login_lockouts WHERE username = $1`, [username]);
 }
 
+// Every distinct username ever submitted to POST /auth/login gets a row here
+// by design — real or fake, so a probe against a nonexistent username locks
+// identically to a real one (see the module comment above) — so unlike
+// audit_log this table has no record-keeping value past the lockout window
+// itself and would otherwise grow unbounded for the life of the deployment.
+// last_attempt_at rather than locked_until: an active lockout's own
+// last_attempt_at is always recent (the lockout duration is minutes, not
+// days), so this can never prune a currently-locked row out from under it.
+export async function pruneLoginLockouts(retentionDays: number): Promise<number> {
+  const rows = await query<{ username: string }>(
+    `DELETE FROM login_lockouts WHERE last_attempt_at < now() - ($1 || ' days')::interval RETURNING username`,
+    [retentionDays]
+  );
+  return rows.length;
+}
+
 // ─── MFA pending logins ─────────────────────────────────────────────────────
 // A password-verified-but-not-yet-MFA'd login, same "real server-side row,
 // not a stateless token" choice as sessions below, for the same reason:
@@ -242,6 +244,17 @@ export async function deleteMfaPendingLogin(token: string): Promise<void> {
   await query(`DELETE FROM mfa_pending_logins WHERE token = $1`, [token]);
 }
 
+// deleteMfaPendingLogin above only ever fires on a *completed* MFA login
+// (routes/auth.ts) — an abandoned one (password verified, code never
+// entered) hits its own expires_at and just sits there forever otherwise,
+// despite ix_mfa_pending_expires existing specifically for this cleanup.
+export async function pruneExpiredMfaPendingLogins(): Promise<number> {
+  const rows = await query<{ token: string }>(
+    `DELETE FROM mfa_pending_logins WHERE expires_at < now() RETURNING token`
+  );
+  return rows.length;
+}
+
 export async function createSession(userId: number): Promise<{ id: string; expiresAt: Date }> {
   const id = crypto.randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
@@ -261,7 +274,7 @@ export async function destroySession(sessionId: string): Promise<void> {
 export async function getUserBySession(sessionId: string): Promise<User | null> {
   const row = await queryOne<UserRow>(
     `SELECT u.id::text, u.username, u.password_hash, u.role,
-            u.allowed_groups, u.allowed_source_platform_ids, u.created_at
+            u.allowed_groups, u.allowed_source_platform_ids, u.created_at, u.mfa_enabled
        FROM sessions s
        JOIN users u ON u.id = s.user_id
       WHERE s.id = $1 AND s.expires_at > now()`,
@@ -347,7 +360,7 @@ export async function deleteApiKey(userId: number, id: number): Promise<boolean>
 export async function getUserByApiKey(rawKey: string): Promise<User | null> {
   const row = await queryOne<UserRow & { key_id: string }>(
     `SELECT u.id::text, u.username, u.password_hash, u.role,
-            u.allowed_groups, u.allowed_source_platform_ids, u.created_at,
+            u.allowed_groups, u.allowed_source_platform_ids, u.created_at, u.mfa_enabled,
             k.id::text AS key_id
        FROM api_keys k
        JOIN users u ON u.id = k.user_id

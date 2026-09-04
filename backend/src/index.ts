@@ -12,6 +12,7 @@ import { tryClaimJob } from "./db/jobLock";
 import { seedExamples } from "./db/seed";
 import { seedAdmin } from "./db/seedAdmin";
 import { pruneAuditLog } from "./services/auditService";
+import { pruneLoginLockouts, pruneExpiredMfaPendingLogins } from "./services/authService";
 import { auditLog } from "./middleware/audit";
 import { metrics } from "./middleware/metrics";
 import { errorHandler, notFound } from "./middleware/errorHandler";
@@ -153,6 +154,8 @@ async function start(): Promise<void> {
     // claiming replica dies mid-run.
     const AUDIT_LOG_PRUNE_LEASE_MS = 5 * 60_000;
     const REMOTE_REJECTS_PRUNE_LEASE_MS = 5 * 60_000;
+    const LOGIN_LOCKOUTS_PRUNE_LEASE_MS = 5 * 60_000;
+    const MFA_PENDING_PRUNE_LEASE_MS = 5 * 60_000;
 
     if (await tryClaimJob("audit_log_prune", AUDIT_LOG_PRUNE_LEASE_MS)) {
       await pruneAuditLog(config.auditLog.retentionDays);
@@ -176,6 +179,31 @@ async function start(): Promise<void> {
           await pruneRemoteSourceRejects(config.remoteSources.rejectsRetentionDays);
         }
       })().catch((err) => logger.error("Remote source rejects prune failed", { err }));
+    }, 24 * 60 * 60 * 1000);
+
+    // Neither of these has audit_log's record-keeping value — see
+    // authService.ts's pruneLoginLockouts/pruneExpiredMfaPendingLogins —
+    // but both grow unbounded otherwise, same as the two above.
+    if (await tryClaimJob("login_lockouts_prune", LOGIN_LOCKOUTS_PRUNE_LEASE_MS)) {
+      await pruneLoginLockouts(config.loginLockout.rowRetentionDays);
+    }
+    setInterval(() => {
+      (async () => {
+        if (await tryClaimJob("login_lockouts_prune", LOGIN_LOCKOUTS_PRUNE_LEASE_MS)) {
+          await pruneLoginLockouts(config.loginLockout.rowRetentionDays);
+        }
+      })().catch((err) => logger.error("Login lockouts prune failed", { err }));
+    }, 24 * 60 * 60 * 1000);
+
+    if (await tryClaimJob("mfa_pending_logins_prune", MFA_PENDING_PRUNE_LEASE_MS)) {
+      await pruneExpiredMfaPendingLogins();
+    }
+    setInterval(() => {
+      (async () => {
+        if (await tryClaimJob("mfa_pending_logins_prune", MFA_PENDING_PRUNE_LEASE_MS)) {
+          await pruneExpiredMfaPendingLogins();
+        }
+      })().catch((err) => logger.error("MFA pending logins prune failed", { err }));
     }, 24 * 60 * 60 * 1000);
 
     // Not called synchronously here before app.listen the way the prunes

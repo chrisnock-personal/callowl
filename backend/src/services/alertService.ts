@@ -133,6 +133,7 @@ async function sendWebhook(condition: Condition, kind: "alert" | "recovered"): P
 }
 
 interface AlertStateRow {
+  condition: string;
   healthy: boolean;
   last_alert_at: string | null;
 }
@@ -142,18 +143,30 @@ interface AlertStateRow {
  * (for a condition that's stayed unhealthy) once ALERT_COOLDOWN_HOURS has
  * passed since the last notification, and persists the new state either way
  * — called on a schedule from index.ts, behind tryClaimJob like the other
- * scheduled jobs there.
+ * scheduled jobs there. One SELECT (WHERE condition = ANY(...)) and one
+ * multi-row upsert for however many conditions exist, rather than a pair of
+ * round trips per condition — this runs on every tick for the life of the
+ * process, so the query count doesn't scale with the number of remote
+ * sources configured. Only the webhook POST itself stays per-condition,
+ * since each one's send/skip decision is independent and the requests can't
+ * usefully be batched.
  */
 export async function checkAndNotify(): Promise<void> {
   const conditions = await evaluateConditions();
+  if (conditions.length === 0) return;
   const now = new Date();
 
+  const priorRows = await query<AlertStateRow>(
+    "SELECT condition, healthy, last_alert_at FROM alert_state WHERE condition = ANY($1)",
+    [conditions.map((c) => c.key)]
+  );
+  const priorByKey = new Map(priorRows.map((r) => [r.condition, r]));
+
+  const upsertParams: unknown[] = [];
+  const upsertValues: string[] = [];
+
   for (const c of conditions) {
-    const rows = await query<AlertStateRow>(
-      "SELECT healthy, last_alert_at FROM alert_state WHERE condition = $1",
-      [c.key]
-    );
-    const prev = rows[0];
+    const prev = priorByKey.get(c.key);
 
     let shouldNotify = false;
     let kind: "alert" | "recovered" = "alert";
@@ -176,13 +189,22 @@ export async function checkAndNotify(): Promise<void> {
       await sendWebhook(c, kind);
     }
 
-    await query(
-      `INSERT INTO alert_state (condition, healthy, message, last_alert_at, updated_at)
-       VALUES ($1, $2, $3, $4, now())
-       ON CONFLICT (condition) DO UPDATE
-         SET healthy = EXCLUDED.healthy, message = EXCLUDED.message,
-             last_alert_at = EXCLUDED.last_alert_at, updated_at = now()`,
-      [c.key, c.healthy, c.message, shouldNotify ? now.toISOString() : (prev?.last_alert_at ?? null)]
+    const base = upsertParams.length;
+    upsertValues.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, now())`);
+    upsertParams.push(
+      c.key,
+      c.healthy,
+      c.message,
+      shouldNotify ? now.toISOString() : (prev?.last_alert_at ?? null)
     );
   }
+
+  await query(
+    `INSERT INTO alert_state (condition, healthy, message, last_alert_at, updated_at)
+     VALUES ${upsertValues.join(", ")}
+     ON CONFLICT (condition) DO UPDATE
+       SET healthy = EXCLUDED.healthy, message = EXCLUDED.message,
+           last_alert_at = EXCLUDED.last_alert_at, updated_at = now()`,
+    upsertParams
+  );
 }

@@ -2733,15 +2733,11 @@ function ConfigExportImportSection({ authUser }: { authUser: AuthUser }) {
     setMsg(null);
     try {
       const bundle = await api.exportConfig();
-      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `callowl-config-${bundle.exportedAt.replace(/[:.]/g, "-")}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      downloadBlob(
+        `callowl-config-${bundle.exportedAt.replace(/[:.]/g, "-")}.json`,
+        JSON.stringify(bundle, null, 2),
+        "application/json"
+      );
     } catch (e: any) {
       setMsg({ ok: false, text: e.message ?? "Export failed" });
     } finally {
@@ -4159,7 +4155,12 @@ function RemoteSourcesSection() {
       await api.remoteSources.create({
         name: newName,
         baseUrl: newBaseUrl,
-        pollIntervalMinutes: Number(newPollInterval) || 15,
+        // No client-side fallback for 0/invalid — the backend already
+        // rejects anything below 1 with a real validation error (shown via
+        // the catch below); silently substituting 15 here would save a
+        // typo-0 but just as easily save over a value someone actually
+        // meant to change, with no feedback either way.
+        pollIntervalMinutes: Number(newPollInterval),
         backfillFrom: localInputToIso(newBackfillFrom),
         auth: buildAuth({
           authType: newAuthType,
@@ -4270,7 +4271,10 @@ function RemoteSourcesSection() {
       await api.remoteSources.update(source.id, {
         name: editName,
         baseUrl: editBaseUrl,
-        pollIntervalMinutes: Number(editPollInterval) || 15,
+        // Same reasoning as the create form above — let the backend's own
+        // min(1) validation reject an invalid value with a real error
+        // instead of silently substituting a different one.
+        pollIntervalMinutes: Number(editPollInterval),
         ...(editRotateAuth
           ? {
               auth: buildAuth({
