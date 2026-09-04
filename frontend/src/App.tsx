@@ -533,8 +533,22 @@ export default function App() {
   // showing forever once set even if someone later wipes the database.
   // pageSize: 1 with a wide, fixed time range (independent of whatever the
   // dashboard's own filters currently are) — this has to answer "is the
-  // whole install empty," not "is the current view empty."
-  const [onboardingEmpty, setOnboardingEmpty] = useState<boolean | null>(null);
+  // whole install empty," not "is the current view empty." Admin-only,
+  // checked and rendered: GET /calls runs through the same scopeFilters as
+  // every other list request, so a viewer restricted to a group/source
+  // platform with no records yet would see totalRecords: 0 here even on a
+  // populated install — and "configure a remote source," one of the
+  // banner's own suggested next steps, is admin-only anyway, so a viewer
+  // couldn't act on it regardless.
+  const [onboardingEmpty, setOnboardingEmpty] = useState<boolean | null>(() => {
+    try {
+      // Once confirmed non-empty, cached permanently — this can only ever
+      // suppress an unneeded re-check, never cause a false "still empty."
+      return localStorage.getItem("opencdr.onboarding.notEmpty") === "true" ? false : null;
+    } catch {
+      return null;
+    }
+  });
   const [onboardingDismissed, setOnboardingDismissed] = useState(() => {
     try {
       return localStorage.getItem("opencdr.onboarding.dismissed") === "true";
@@ -543,8 +557,7 @@ export default function App() {
     }
   });
 
-  useEffect(() => {
-    if (!authUser) return;
+  const checkOnboardingEmpty = useCallback(() => {
     api
       .listCalls({
         startTime: "2000-01-01T00:00:00.000Z",
@@ -552,8 +565,24 @@ export default function App() {
         page: 1,
         pageSize: 1,
       })
-      .then((page) => setOnboardingEmpty(page.pagination.totalRecords === 0))
+      .then((page) => {
+        const empty = page.pagination.totalRecords === 0;
+        setOnboardingEmpty(empty);
+        if (!empty) {
+          try {
+            localStorage.setItem("opencdr.onboarding.notEmpty", "true");
+          } catch {
+            // Best-effort — worst case this re-checks again next session.
+          }
+        }
+      })
       .catch(() => setOnboardingEmpty(null));
+  }, []);
+
+  useEffect(() => {
+    if (!authUser || authUser.role !== "admin") return;
+    if (onboardingEmpty === false) return; // already confirmed non-empty (cached)
+    checkOnboardingEmpty();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authUser?.username]);
 
@@ -906,7 +935,7 @@ export default function App() {
       />
 
       <main style={{ maxWidth: 1280, margin: "0 auto", padding: "0 20px 64px" }}>
-        {onboardingEmpty && !onboardingDismissed && (
+        {authUser.role === "admin" && onboardingEmpty && !onboardingDismissed && (
           <OnboardingChecklist onIngest={() => setShowIngest(true)} onDismiss={dismissOnboarding} />
         )}
         <FilterBar
@@ -1026,6 +1055,7 @@ export default function App() {
           onDone={() => {
             setShowIngest(false);
             load();
+            if (authUser.role === "admin") checkOnboardingEmpty();
           }}
         />
       )}
