@@ -93,12 +93,19 @@ jobs:
         # No .env file needed: every docker-compose.yml var has a "${VAR:-default}"
         # fallback (see docker-compose.yml's `name:` header comment), so the
         # default credentials are fine for an ephemeral CI stack. Polling through
-        # the frontend's nginx :80->HTTP_PORT mapping (not the backend directly,
+        # the frontend's nginx :443->HTTPS_PORT mapping (not the backend directly,
         # which publishes no host port) matches how the stack is actually reached
-        # in production — see frontend/nginx.conf's /api/ proxy_pass.
+        # in production — see frontend/nginx.conf's /api/ proxy_pass. HTTPS_PORT,
+        # not HTTP_PORT: the frontend terminates HTTPS by default now and HTTP_PORT
+        # only 301-redirects to it (frontend/docker-entrypoint.sh generates a
+        # self-signed cert on first boot) — plain `curl -sf` against the redirect
+        # target would exit 0 on the 301 itself without ever reaching the backend,
+        # silently testing nothing. -k skips the self-signed cert's trust check,
+        # same as any client reaching this stack would need to until a real
+        # cert is uploaded/mounted.
         run: |
           for i in $(seq 1 60); do
-            if curl -sf http://localhost:8080/api/cdr/v1/health > /dev/null; then
+            if curl -skf https://localhost:8443/api/cdr/v1/health > /dev/null; then
               echo "Backend /health is up via the frontend proxy."
               exit 0
             fi
