@@ -1,6 +1,6 @@
 {
   "name": "callowl-backend",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CallOwl — ingest and serve Call Detail Records conforming to the Open CDR Standard",
   "main": "dist/index.js",
   "scripts": {

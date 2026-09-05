@@ -241,7 +241,7 @@ The schema marks `callEndTime` as **required** on `CallRecord`, but the same fie
 
 ## Status
 
-A prototype: no TLS baked in (bring your own reverse proxy — see [Deploying](#deploying)), single-node Postgres, statistics computed on the fly. Enough to ingest conforming CDRs, browse them, and demonstrate the standard end to end. A baseline hardening pass is in place (security headers, login rate limiting, non-root containers — see [Deploying](#deploying)), but this hasn't had a full production security audit.
+Past the original prototype stage: HTTPS is on by default (self-signed out of the box, replaceable with a real cert or your own reverse proxy — see [Deploying](#deploying)), and beyond just ingesting/browsing CDRs it now includes MFA, per-account login lockout, encrypted-at-rest secrets with rotation support, point-in-time recovery plus off-host backup sync, outbound alerting on backup/PITR/remote-source health, a full audit log, and a real (if deliberately narrow) automated test suite. Still single-node Postgres, statistics computed on the fly, and a baseline hardening pass rather than a full one (security headers, login rate limiting, non-root containers — see [Deploying](#deploying)) — this hasn't had a full production security audit.
 
 ---
 

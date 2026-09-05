@@ -180,7 +180,7 @@ export const config = {
 
   apiBasePath: "/api/cdr/v1",
   apiVersion: "1.0.0",
-  platformVersion: "OpenCDR Platform 0.1.0",
+  platformVersion: "CallOwl 0.2.0",
 
   paths: {
     schemaYaml: path.join(dataDir, "cdr-schema.yaml"),
