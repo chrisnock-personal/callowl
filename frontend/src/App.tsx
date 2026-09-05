@@ -4041,6 +4041,46 @@ function ExampleScriptsModal({
   );
 }
 
+// Shared by the create form and the edit-in-place form below — one state
+// object per form instead of ~14 separate useState calls each, which used to
+// mean a future auth-type field (there are already three: api_key/oauth2/
+// custom-script) required editing four places (both state blocks, both
+// submit handlers) by hand instead of one. backfillFrom isn't part of this
+// shape since only the create form has one — edit doesn't let you change a
+// source's backfill window, so unifying it in here would just be a field
+// the edit form carries around and never reads.
+interface RemoteSourceFormState {
+  name: string;
+  baseUrl: string;
+  pollInterval: string;
+  authType: RemoteSourceAuthType;
+  apiKey: string;
+  headerName: string;
+  tokenUrl: string;
+  clientId: string;
+  clientSecret: string;
+  scope: string;
+  scriptBody: string;
+  envText: string;
+  acceptLiability: boolean;
+}
+
+const EMPTY_REMOTE_SOURCE_FORM: RemoteSourceFormState = {
+  name: "",
+  baseUrl: "",
+  pollInterval: "15",
+  authType: "api_key",
+  apiKey: "",
+  headerName: "",
+  tokenUrl: "",
+  clientId: "",
+  clientSecret: "",
+  scope: "",
+  scriptBody: "",
+  envText: "",
+  acceptLiability: false,
+};
+
 // Admin-only, DB-backed config for pulling CDRs from another Open-CDR-compatible
 // platform's own GET /calls, on top of this platform's existing push-based
 // POST /calls/ingest — see backend/src/services/remotePollService.ts. Follows
@@ -4057,37 +4097,13 @@ function RemoteSourcesSection() {
   const [rejectsSource, setRejectsSource] = useState<RemoteSourceMeta | null>(null);
   const [showExamples, setShowExamples] = useState(false);
 
-  const [newName, setNewName] = useState("");
-  const [newBaseUrl, setNewBaseUrl] = useState("");
-  const [newPollInterval, setNewPollInterval] = useState("15");
+  const [newForm, setNewForm] = useState<RemoteSourceFormState>(EMPTY_REMOTE_SOURCE_FORM);
   const [newBackfillFrom, setNewBackfillFrom] = useState(() => isoToLocalInput(new Date().toISOString()));
-  const [newAuthType, setNewAuthType] = useState<RemoteSourceAuthType>("api_key");
-  const [newApiKey, setNewApiKey] = useState("");
-  const [newHeaderName, setNewHeaderName] = useState("");
-  const [newTokenUrl, setNewTokenUrl] = useState("");
-  const [newClientId, setNewClientId] = useState("");
-  const [newClientSecret, setNewClientSecret] = useState("");
-  const [newScope, setNewScope] = useState("");
-  const [newScriptBody, setNewScriptBody] = useState("");
-  const [newEnvText, setNewEnvText] = useState("");
-  const [newAcceptLiability, setNewAcceptLiability] = useState(false);
 
   // Only one row edits at a time — mutually exclusive with the add-source form.
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editBaseUrl, setEditBaseUrl] = useState("");
-  const [editPollInterval, setEditPollInterval] = useState("15");
+  const [editForm, setEditForm] = useState<RemoteSourceFormState>(EMPTY_REMOTE_SOURCE_FORM);
   const [editRotateAuth, setEditRotateAuth] = useState(false);
-  const [editAuthType, setEditAuthType] = useState<RemoteSourceAuthType>("api_key");
-  const [editApiKey, setEditApiKey] = useState("");
-  const [editHeaderName, setEditHeaderName] = useState("");
-  const [editTokenUrl, setEditTokenUrl] = useState("");
-  const [editClientId, setEditClientId] = useState("");
-  const [editClientSecret, setEditClientSecret] = useState("");
-  const [editScope, setEditScope] = useState("");
-  const [editScriptBody, setEditScriptBody] = useState("");
-  const [editEnvText, setEditEnvText] = useState("");
-  const [editAcceptLiability, setEditAcceptLiability] = useState(false);
   const [editBusy, setEditBusy] = useState(false);
 
   const refresh = () => {
@@ -4121,17 +4137,7 @@ function RemoteSourcesSection() {
     return env;
   };
 
-  const buildAuth = (fields: {
-    authType: RemoteSourceAuthType;
-    apiKey: string;
-    headerName: string;
-    tokenUrl: string;
-    clientId: string;
-    clientSecret: string;
-    scope: string;
-    scriptBody: string;
-    envText: string;
-  }): RemoteSourceAuthInput => {
+  const buildAuth = (fields: RemoteSourceFormState): RemoteSourceAuthInput => {
     if (fields.authType === "api_key") {
       return { authType: "api_key", apiKey: fields.apiKey, headerName: fields.headerName || undefined };
     }
@@ -4153,41 +4159,19 @@ function RemoteSourcesSection() {
     setMsg(null);
     try {
       await api.remoteSources.create({
-        name: newName,
-        baseUrl: newBaseUrl,
+        name: newForm.name,
+        baseUrl: newForm.baseUrl,
         // No client-side fallback for 0/invalid — the backend already
         // rejects anything below 1 with a real validation error (shown via
         // the catch below); silently substituting 15 here would save a
         // typo-0 but just as easily save over a value someone actually
         // meant to change, with no feedback either way.
-        pollIntervalMinutes: Number(newPollInterval),
+        pollIntervalMinutes: Number(newForm.pollInterval),
         backfillFrom: localInputToIso(newBackfillFrom),
-        auth: buildAuth({
-          authType: newAuthType,
-          apiKey: newApiKey,
-          headerName: newHeaderName,
-          tokenUrl: newTokenUrl,
-          clientId: newClientId,
-          clientSecret: newClientSecret,
-          scope: newScope,
-          scriptBody: newScriptBody,
-          envText: newEnvText,
-        }),
+        auth: buildAuth(newForm),
       });
-      setNewName("");
-      setNewBaseUrl("");
-      setNewPollInterval("15");
+      setNewForm(EMPTY_REMOTE_SOURCE_FORM);
       setNewBackfillFrom(isoToLocalInput(new Date().toISOString()));
-      setNewAuthType("api_key");
-      setNewApiKey("");
-      setNewHeaderName("");
-      setNewTokenUrl("");
-      setNewClientId("");
-      setNewClientSecret("");
-      setNewScope("");
-      setNewScriptBody("");
-      setNewEnvText("");
-      setNewAcceptLiability(false);
       setShowAdd(false);
       refresh();
     } catch (e: any) {
@@ -4245,20 +4229,14 @@ function RemoteSourcesSection() {
     setShowAdd(false);
     setMsg(null);
     setEditingId(source.id);
-    setEditName(source.name);
-    setEditBaseUrl(source.baseUrl);
-    setEditPollInterval(String(source.pollIntervalMinutes));
+    setEditForm({
+      ...EMPTY_REMOTE_SOURCE_FORM,
+      name: source.name,
+      baseUrl: source.baseUrl,
+      pollInterval: String(source.pollIntervalMinutes),
+      authType: source.authType,
+    });
     setEditRotateAuth(false);
-    setEditAuthType(source.authType);
-    setEditApiKey("");
-    setEditHeaderName("");
-    setEditTokenUrl("");
-    setEditClientId("");
-    setEditClientSecret("");
-    setEditScope("");
-    setEditScriptBody("");
-    setEditEnvText("");
-    setEditAcceptLiability(false);
   };
 
   const cancelEdit = () => setEditingId(null);
@@ -4269,27 +4247,13 @@ function RemoteSourcesSection() {
     setMsg(null);
     try {
       await api.remoteSources.update(source.id, {
-        name: editName,
-        baseUrl: editBaseUrl,
+        name: editForm.name,
+        baseUrl: editForm.baseUrl,
         // Same reasoning as the create form above — let the backend's own
         // min(1) validation reject an invalid value with a real error
         // instead of silently substituting a different one.
-        pollIntervalMinutes: Number(editPollInterval),
-        ...(editRotateAuth
-          ? {
-              auth: buildAuth({
-                authType: editAuthType,
-                apiKey: editApiKey,
-                headerName: editHeaderName,
-                tokenUrl: editTokenUrl,
-                clientId: editClientId,
-                clientSecret: editClientSecret,
-                scope: editScope,
-                scriptBody: editScriptBody,
-                envText: editEnvText,
-              }),
-            }
-          : {}),
+        pollIntervalMinutes: Number(editForm.pollInterval),
+        ...(editRotateAuth ? { auth: buildAuth(editForm) } : {}),
       });
       setEditingId(null);
       refresh();
@@ -4326,80 +4290,66 @@ function RemoteSourcesSection() {
     boxSizing: "border-box",
   };
 
-  // Shared by the add-form and the edit-form's optional "rotate credential" fields.
-  const authFields = (fields: {
-    authType: RemoteSourceAuthType;
-    setAuthType: (v: RemoteSourceAuthType) => void;
-    apiKey: string;
-    setApiKey: (v: string) => void;
-    headerName: string;
-    setHeaderName: (v: string) => void;
-    tokenUrl: string;
-    setTokenUrl: (v: string) => void;
-    clientId: string;
-    setClientId: (v: string) => void;
-    clientSecret: string;
-    setClientSecret: (v: string) => void;
-    scope: string;
-    setScope: (v: string) => void;
-    scriptBody: string;
-    setScriptBody: (v: string) => void;
-    envText: string;
-    setEnvText: (v: string) => void;
-    acceptLiability: boolean;
-    setAcceptLiability: (v: boolean) => void;
-  }) => (
+  // Shared by the add-form and the edit-form's optional "rotate credential"
+  // fields — takes the whole form state object plus its setter, rather than
+  // an 18-prop bag of individual getter/setter pairs one per field, so
+  // create/edit forms just pass `authFields(newForm, setNewForm)` /
+  // `authFields(editForm, setEditForm)`.
+  const authFields = (
+    form: RemoteSourceFormState,
+    setForm: React.Dispatch<React.SetStateAction<RemoteSourceFormState>>
+  ) => (
     <>
       <select
-        value={fields.authType}
-        onChange={(e) => fields.setAuthType(e.target.value as RemoteSourceAuthType)}
+        value={form.authType}
+        onChange={(e) => setForm((f) => ({ ...f, authType: e.target.value as RemoteSourceAuthType }))}
         style={smallInput}
       >
         <option value="api_key">API key</option>
         <option value="oauth2_client_credentials">OAuth2 client credentials</option>
         <option value="custom">Custom script (Python)</option>
       </select>
-      {fields.authType === "api_key" ? (
+      {form.authType === "api_key" ? (
         <>
           <input
             type="password"
             placeholder="API key"
-            value={fields.apiKey}
-            onChange={(e) => fields.setApiKey(e.target.value)}
+            value={form.apiKey}
+            onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
             style={smallInput}
           />
           <input
             placeholder="Header name (default X-API-Key)"
-            value={fields.headerName}
-            onChange={(e) => fields.setHeaderName(e.target.value)}
+            value={form.headerName}
+            onChange={(e) => setForm((f) => ({ ...f, headerName: e.target.value }))}
             style={smallInput}
           />
         </>
-      ) : fields.authType === "oauth2_client_credentials" ? (
+      ) : form.authType === "oauth2_client_credentials" ? (
         <>
           <input
             placeholder="Token URL"
-            value={fields.tokenUrl}
-            onChange={(e) => fields.setTokenUrl(e.target.value)}
+            value={form.tokenUrl}
+            onChange={(e) => setForm((f) => ({ ...f, tokenUrl: e.target.value }))}
             style={smallInput}
           />
           <input
             placeholder="Client ID"
-            value={fields.clientId}
-            onChange={(e) => fields.setClientId(e.target.value)}
+            value={form.clientId}
+            onChange={(e) => setForm((f) => ({ ...f, clientId: e.target.value }))}
             style={smallInput}
           />
           <input
             type="password"
             placeholder="Client secret"
-            value={fields.clientSecret}
-            onChange={(e) => fields.setClientSecret(e.target.value)}
+            value={form.clientSecret}
+            onChange={(e) => setForm((f) => ({ ...f, clientSecret: e.target.value }))}
             style={smallInput}
           />
           <input
             placeholder="Scope (optional)"
-            value={fields.scope}
-            onChange={(e) => fields.setScope(e.target.value)}
+            value={form.scope}
+            onChange={(e) => setForm((f) => ({ ...f, scope: e.target.value }))}
             style={smallInput}
           />
         </>
@@ -4434,8 +4384,7 @@ function RemoteSourcesSection() {
           {showExamples && (
             <ExampleScriptsModal
               onUse={(ex) => {
-                fields.setScriptBody(ex.scriptBody);
-                fields.setEnvText(ex.envHint);
+                setForm((f) => ({ ...f, scriptBody: ex.scriptBody, envText: ex.envHint }));
                 setShowExamples(false);
               }}
               onClose={() => setShowExamples(false)}
@@ -4443,8 +4392,8 @@ function RemoteSourcesSection() {
           )}
           <textarea
             placeholder="Python script body"
-            value={fields.scriptBody}
-            onChange={(e) => fields.setScriptBody(e.target.value)}
+            value={form.scriptBody}
+            onChange={(e) => setForm((f) => ({ ...f, scriptBody: e.target.value }))}
             spellCheck={false}
             style={{ ...scriptTextarea, height: 180 }}
           />
@@ -4454,8 +4403,8 @@ function RemoteSourcesSection() {
           </div>
           <textarea
             placeholder={"SFTP_HOST=example.com\nSFTP_USER=cdr-export\nSFTP_PASSWORD=..."}
-            value={fields.envText}
-            onChange={(e) => fields.setEnvText(e.target.value)}
+            value={form.envText}
+            onChange={(e) => setForm((f) => ({ ...f, envText: e.target.value }))}
             spellCheck={false}
             style={{ ...scriptTextarea, height: 70 }}
           />
@@ -4472,8 +4421,8 @@ function RemoteSourcesSection() {
             <input
               type="checkbox"
               id="accept-script-liability"
-              checked={fields.acceptLiability}
-              onChange={(e) => fields.setAcceptLiability(e.target.checked)}
+              checked={form.acceptLiability}
+              onChange={(e) => setForm((f) => ({ ...f, acceptLiability: e.target.checked }))}
               style={{ marginTop: 2, flexShrink: 0 }}
             />
             <label
@@ -4553,15 +4502,15 @@ function RemoteSourcesSection() {
                 <div style={{ fontWeight: 650, fontSize: 12, color: C.ink }}>Editing {s.name}</div>
                 <input
                   placeholder="Name"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
+                  value={editForm.name}
+                  onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
                   required
                   style={smallInput}
                 />
                 <input
                   placeholder="Base URL"
-                  value={editBaseUrl}
-                  onChange={(e) => setEditBaseUrl(e.target.value)}
+                  value={editForm.baseUrl}
+                  onChange={(e) => setEditForm((f) => ({ ...f, baseUrl: e.target.value }))}
                   required
                   style={smallInput}
                 />
@@ -4569,8 +4518,8 @@ function RemoteSourcesSection() {
                   type="number"
                   min={1}
                   placeholder="Poll interval (minutes)"
-                  value={editPollInterval}
-                  onChange={(e) => setEditPollInterval(e.target.value)}
+                  value={editForm.pollInterval}
+                  onChange={(e) => setEditForm((f) => ({ ...f, pollInterval: e.target.value }))}
                   style={smallInput}
                 />
                 <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.textMid }}>
@@ -4581,47 +4530,27 @@ function RemoteSourcesSection() {
                   />
                   Change credential
                 </label>
-                {editRotateAuth &&
-                  authFields({
-                    authType: editAuthType,
-                    setAuthType: setEditAuthType,
-                    apiKey: editApiKey,
-                    setApiKey: setEditApiKey,
-                    headerName: editHeaderName,
-                    setHeaderName: setEditHeaderName,
-                    tokenUrl: editTokenUrl,
-                    setTokenUrl: setEditTokenUrl,
-                    clientId: editClientId,
-                    setClientId: setEditClientId,
-                    clientSecret: editClientSecret,
-                    setClientSecret: setEditClientSecret,
-                    scope: editScope,
-                    setScope: setEditScope,
-                    scriptBody: editScriptBody,
-                    setScriptBody: setEditScriptBody,
-                    envText: editEnvText,
-                    setEnvText: setEditEnvText,
-                    acceptLiability: editAcceptLiability,
-                    setAcceptLiability: setEditAcceptLiability,
-                  })}
+                {editRotateAuth && authFields(editForm, setEditForm)}
                 <div style={{ display: "flex", gap: 6 }}>
                   <button
                     type="submit"
-                    disabled={editBusy || (editRotateAuth && editAuthType === "custom" && !editAcceptLiability)}
+                    disabled={
+                      editBusy || (editRotateAuth && editForm.authType === "custom" && !editForm.acceptLiability)
+                    }
                     style={{
                       flex: 1,
                       padding: "7px 10px",
                       borderRadius: 6,
                       border: "none",
                       background:
-                        editBusy || (editRotateAuth && editAuthType === "custom" && !editAcceptLiability)
+                        editBusy || (editRotateAuth && editForm.authType === "custom" && !editForm.acceptLiability)
                           ? C.borderStrong
                           : C.ink,
                       color: "#fff",
                       fontSize: 12,
                       fontWeight: 650,
                       cursor:
-                        editBusy || (editRotateAuth && editAuthType === "custom" && !editAcceptLiability)
+                        editBusy || (editRotateAuth && editForm.authType === "custom" && !editForm.acceptLiability)
                           ? "default"
                           : "pointer",
                     }}
@@ -4765,19 +4694,19 @@ function RemoteSourcesSection() {
         <form onSubmit={handleAdd} style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
           <input
             placeholder="Name"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
+            value={newForm.name}
+            onChange={(e) => setNewForm((f) => ({ ...f, name: e.target.value }))}
             required
             style={smallInput}
           />
           <input
             placeholder={
-              newAuthType === "custom"
+              newForm.authType === "custom"
                 ? "Base URL — not used by a script; any valid URL is fine as a label, e.g. https://cucm.internal.example"
                 : "Base URL (e.g. https://other-instance.example.com/api/cdr/v1)"
             }
-            value={newBaseUrl}
-            onChange={(e) => setNewBaseUrl(e.target.value)}
+            value={newForm.baseUrl}
+            onChange={(e) => setNewForm((f) => ({ ...f, baseUrl: e.target.value }))}
             required
             style={smallInput}
           />
@@ -4785,8 +4714,8 @@ function RemoteSourcesSection() {
             type="number"
             min={1}
             placeholder="Poll interval (minutes)"
-            value={newPollInterval}
-            onChange={(e) => setNewPollInterval(e.target.value)}
+            value={newForm.pollInterval}
+            onChange={(e) => setNewForm((f) => ({ ...f, pollInterval: e.target.value }))}
             style={smallInput}
           />
           <label style={{ fontSize: 11, color: C.textMuted }}>
@@ -4799,40 +4728,19 @@ function RemoteSourcesSection() {
               style={{ ...smallInput, marginTop: 2 }}
             />
           </label>
-          {authFields({
-            authType: newAuthType,
-            setAuthType: setNewAuthType,
-            apiKey: newApiKey,
-            setApiKey: setNewApiKey,
-            headerName: newHeaderName,
-            setHeaderName: setNewHeaderName,
-            tokenUrl: newTokenUrl,
-            setTokenUrl: setNewTokenUrl,
-            clientId: newClientId,
-            setClientId: setNewClientId,
-            clientSecret: newClientSecret,
-            setClientSecret: setNewClientSecret,
-            scope: newScope,
-            setScope: setNewScope,
-            scriptBody: newScriptBody,
-            setScriptBody: setNewScriptBody,
-            envText: newEnvText,
-            setEnvText: setNewEnvText,
-            acceptLiability: newAcceptLiability,
-            setAcceptLiability: setNewAcceptLiability,
-          })}
+          {authFields(newForm, setNewForm)}
           <button
             type="submit"
-            disabled={busy || (newAuthType === "custom" && !newAcceptLiability)}
+            disabled={busy || (newForm.authType === "custom" && !newForm.acceptLiability)}
             style={{
               padding: "7px 10px",
               borderRadius: 6,
               border: "none",
-              background: busy || (newAuthType === "custom" && !newAcceptLiability) ? C.borderStrong : C.ink,
+              background: busy || (newForm.authType === "custom" && !newForm.acceptLiability) ? C.borderStrong : C.ink,
               color: "#fff",
               fontSize: 12,
               fontWeight: 650,
-              cursor: busy || (newAuthType === "custom" && !newAcceptLiability) ? "default" : "pointer",
+              cursor: busy || (newForm.authType === "custom" && !newForm.acceptLiability) ? "default" : "pointer",
             }}
           >
             {busy ? "Creating…" : "Create source"}
