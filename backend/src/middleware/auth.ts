@@ -121,19 +121,54 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
 }
 
 /**
- * Protects the admin backup/restore actions (not the read-only status list,
- * which just needs requireAuth like the rest of the read API). Passes if
- * *either* a currently-valid ADMIN_API_KEY matches (unchanged from before —
- * existing scripts/automation keep working) *or* the caller is logged in as
- * an admin, so the dashboard doesn't need a separate key pasted in once real
- * accounts exist.
+ * Protects the admin backup/restore/TLS-replace actions (not the read-only
+ * status list, which just needs requireAuth like the rest of the read API).
+ * Passes if *either* the caller is logged in as an admin *or* a currently-
+ * valid ADMIN_API_KEY was provided.
+ *
+ * Resolves the session cookie itself rather than depending on requireAuth
+ * having already run in front of it on these routes (it deliberately isn't
+ * — stacking requireAuth first would reject a caller authenticating via the
+ * shared ADMIN_API_KEY alone, since requireAuth's own fallback only knows
+ * about *per-user* API keys, not this shared one). Found the hard way while
+ * fixing the bug below: since req.user was never populated on these routes
+ * at all, "or the caller is logged in as an admin" had *never* actually
+ * worked here even before that fix — the only reason a real admin session
+ * ever appeared to grant access was the same over-permissive fallback that
+ * let an anonymous caller in too.
+ *
+ * Deliberately does NOT reuse requireKey above despite the similar shape:
+ * requireKey's "no keys configured => next()" is correct for requireApiKey's
+ * ingest gate (fully open is the documented local-lab default there), but
+ * wrong here — restore replaces the whole database and TLS-replace changes
+ * what the whole site serves, so an unconfigured ADMIN_API_KEY must fail
+ * closed (require an admin session), not open to every anonymous caller.
+ * Reusing requireKey previously did exactly that: a fully credential-less
+ * request could trigger pg_restore or replace the TLS cert whenever an
+ * operator simply hadn't set ADMIN_API_KEY — the out-of-the-box default —
+ * confirmed live against a real running instance before this fix.
  */
-export function requireAdminKey(req: Request, res: Response, next: NextFunction): void {
+export async function requireAdminKey(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (!req.user) {
+    const sessionId = req.cookies?.[SESSION_COOKIE] as string | undefined;
+    const user = sessionId ? await getUserBySession(sessionId) : null;
+    if (user) req.user = user;
+  }
   if (req.user?.role === "admin") {
     next();
     return;
   }
-  requireKey(config.adminApiKeys, "perform this action")(req, res, next);
+  const providedKey = req.headers["x-api-key"] as string | undefined;
+  if (providedKey && config.adminApiKeys.includes(providedKey)) {
+    next();
+    return;
+  }
+  res.status(401).json({
+    error: {
+      code: "unauthorized",
+      message: "Log in as an admin, or provide a valid X-API-Key header, to perform this action",
+    },
+  });
 }
 
 /**

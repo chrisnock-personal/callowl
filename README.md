@@ -57,9 +57,9 @@ Base path: `/api/cdr/v1`. Interactive docs (Swagger UI) at `/api/cdr/v1/docs`.
 | `GET` | `/statistics/ivr-time` | **Platform extension** — average time spent in IVR bucketed by hour or day |
 | `GET` | `/statistics/ivr-time/by-ivr` | **Platform extension** — IVRs ranked by average traversal time, longest first |
 | `GET` | `/admin/backups` | **Platform extension** — read-only status on backups (filenames, sizes, retention) |
-| `POST` | `/admin/backups` | **Platform extension** — trigger a `pg_dump` now (optionally `ADMIN_API_KEY`-gated, or a logged-in admin session) |
-| `GET` | `/admin/backups/{filename}/download` | **Platform extension** — download a backup file (optionally gated) |
-| `POST` | `/admin/backups/restore` | **Platform extension** — restore from an uploaded `.dump` file (optionally gated, destructive) |
+| `POST` | `/admin/backups` | **Platform extension** — trigger a `pg_dump` now (requires a logged-in admin session, or `ADMIN_API_KEY`) |
+| `GET` | `/admin/backups/{filename}/download` | **Platform extension** — download a backup file (same auth as above) |
+| `POST` | `/admin/backups/restore` | **Platform extension** — restore from an uploaded `.dump` file (same auth as above, destructive) |
 | `GET`/`POST`/`PATCH`/`DELETE` | `/admin/users` | **Platform extension**, admin-only — manage dashboard/API user accounts (see [Authentication & scoped access](#authentication--scoped-access)) |
 | `GET` | `/admin/audit-log` | **Platform extension**, admin-only — who queried/ingested/administered what (see [Audit log](#audit-log)) |
 | `GET`/`POST`/`PATCH`/`DELETE` | `/admin/remote-sources` | **Platform extension**, admin-only — configure remote Open-CDR sources to pull from (see [Roadmap](#roadmap)) |
@@ -156,7 +156,7 @@ scripts/
 
 **On-demand, from the dashboard** — the header menu (**⋯**, top right) has a full Backups panel: last-backup time and retention summary, a scrollable list of recent dumps with a **⬇ download** action each, a **Backup now** button, and a **Restore…** button (pick a `.dump` file, confirm, and it replaces the database outright via `pg_restore --clean --if-exists`). The backend carries its own `pg_dump`/`pg_restore` (installed from the versioned PGDG apt repo — Debian's default package is v15, and pg_dump refuses to dump a *newer* server than itself, so it has to match the v16 server) and mounts `./backups` read-write, alongside the scheduled service.
 
-**On-demand, from the API** — same three actions: `POST /admin/backups` (trigger), `GET /admin/backups/{filename}/download`, `POST /admin/backups/restore` (body is the raw `.dump` file). `GET /admin/backups` (the list) just needs a logged-in session, like the rest of the read API; the three action endpoints above additionally accept `ADMIN_API_KEY` (`X-API-Key` header) as an alternative to a logged-in admin session — unset by default (fine for a local lab), **strongly recommended once this is reachable beyond one**, since restore has no undo.
+**On-demand, from the API** — same three actions: `POST /admin/backups` (trigger), `GET /admin/backups/{filename}/download`, `POST /admin/backups/restore` (body is the raw `.dump` file). `GET /admin/backups` (the list) just needs a logged-in session, like the rest of the read API; the three action endpoints above require a logged-in admin session, or `ADMIN_API_KEY` (`X-API-Key` header) as an alternative — mainly for scripts/automation that can't hold a session cookie, unset by default (fine for a local lab, since the admin-session path always works regardless), **strongly recommended once this is reachable beyond one**, since restore has no undo.
 
 **Manual, from the CLI** — the `backup` service's entrypoint is the loop itself, so a one-off run needs `--entrypoint` to invoke a script directly instead:
 
