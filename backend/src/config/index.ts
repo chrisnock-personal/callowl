@@ -40,7 +40,9 @@ const envSchema = z.object({
   ADMIN_API_KEY: z.string().optional(),
 
   // Seed the five example scenarios from the Open CDR Standard on first boot.
-  SEED_EXAMPLES: z.enum(["true", "false"]).default("true"),
+  // Off by default — a fresh install starts blank; seed manually (`npm run
+  // seed`) if you want them.
+  SEED_EXAMPLES: z.enum(["true", "false"]).default("false"),
 
   // Where the `backup` compose service writes pg_dump files, and where the
   // backend's own on-demand backup/restore endpoints read and write.

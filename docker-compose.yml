@@ -88,7 +88,7 @@ services:
       # CORS for protection — cookies aren't sent cross-origin regardless,
       # since this isn't configured with credentials: true).
       CORS_ORIGIN: "${CORS_ORIGIN:-*}"
-      SEED_EXAMPLES: "${SEED_EXAMPLES:-true}"
+      SEED_EXAMPLES: "${SEED_EXAMPLES:-false}"
       # Set to require a key on POST /calls/ingest. Leave unset for open ingest.
       INGEST_API_KEY: "${INGEST_API_KEY:-}"
       # Set to require a key on the admin backup/restore actions (not the

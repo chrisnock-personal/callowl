@@ -18,8 +18,8 @@ podman-compose up --build # or:  docker compose up --build
 ```
 
 - Dashboard: **https://localhost:8443** (plain `http://localhost:8080` redirects there). TLS is on by default — self-signed out of the box, so your browser warns once until you trust it or mount a real cert/key (see [Deploying](#deploying)).
-- First boot runs migrations and seeds the standard's five example scenarios (inbound, IVR/ACD queue, outbound, conference, transfer), so the dashboard has data immediately. Default time window covers those samples (2024-06-01).
-- For a fuller demo — enough volume for the Insights charts, drill-across, and advanced filter to show something: `npm run seed:demo` from `backend/`. Generates 5,000 schema-conformant records over the last 6 months (multi-leg transfers, conferences, IVR/queue routing, QoS metrics, monitor/barge-in, recordings/transcriptions, device info, vendor-specific fields — every field in the standard, not just the common ones), each validated before ingest. Manual/opt-in, meant for demoing/load-testing — never runs on boot.
+- First boot runs migrations and starts blank — no data until you ingest some. Seed the standard's five example scenarios (inbound, IVR/ACD queue, outbound, conference, transfer) any time with `npm run seed` from `backend/`, or set `SEED_EXAMPLES=true` to seed them automatically on first boot.
+- For a fuller demo — enough volume for the Insights charts, drill-across, and advanced filter to show something: `npm run seed:demo` from `backend/`. Generates 5,000 schema-conformant records over the last 6 months (multi-leg transfers, conferences, IVR/queue routing, QoS metrics, monitor/barge-in, recordings/transcriptions, device info, vendor-specific fields — every field in the standard, not just the common ones), each validated before ingest. Manual/opt-in only.
 - For a full year instead (e.g. to exercise wider Range presets or show seasonality): `npm run seed:demo:12mo` — same generator, 12 months instead of 6, tagged `demo12mo-` instead of `demo5k-` so the two batches stay independently identifiable. Both additive, safe to run alongside each other.
 
 Services:
